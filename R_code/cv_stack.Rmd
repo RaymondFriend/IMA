@@ -1,0 +1,54 @@
+
+# Testing the CV code from Stack Overflow
+https://stats.stackexchange.com/questions/14099/using-k-fold-cross-validation-for-time-series-model-selection
+https://i.stack.imgur.com/fXZ6k.png
+
+
+
+```{r}
+data_raw <- readr::read_csv(file = 'data/Fresno/data_interpolated_with_diesel.csv') %>%
+  select(-X1)
+
+data <- data_raw 
+
+data_ts <- data %>%
+  dplyr::filter(Mode == "R" & DRegionDAT == "IL_CHI") %>% # just one time series
+  dplyr::select(-yw, -Mode, -ORegionDAT, -DRegionDAT) %>%
+  ts(start = c(2017, 1), end = c(2021, 24), frequency = 52)
+
+data %>% dplyr::filter(Mode == "R" & DRegionDAT == "IL_CHI" & yw >= "2019 W50")
+
+train_ts <- data %>%
+  dplyr::filter(Mode == "R" & DRegionDAT == "IL_CHI") %>% # just one time series
+  dplyr::select(-yw, -Mode, -ORegionDAT, -DRegionDAT) %>%
+  ts(start = c(2017, 1), end = c(2019, 52), frequency = 52)
+
+truth_vector <- data %>%
+  dplyr::filter(Mode == "R" & DRegionDAT == "IL_CHI" & yw >= "2020 W01" & yw <= "2020 W12") %>% # just one time series
+  dplyr::select(-yw, -Mode, -ORegionDAT, -DRegionDAT) %>%
+  dplyr:: select(approx_cost) %>%
+  pull(approx_cost)
+
+truth_vector
+```
+
+```{r}
+initial_train_length <- 104 #### Starting with 2 years of initial data
+i <- initial_train_length    
+
+pred_arima <- c()
+
+while(i <= nrow(train_ts)){
+  cv_train <- ts(train_ts[1:i, "approx_cost"], start=c(2017, 1), frequency=52)
+  # Would have to create some future data up to 12 away
+	pred_arima <- rbind(pred_arima, data.frame(forecast(auto.arima(cv_train), h = 12)$mean[1:1]))
+  i = i + 1
+}
+
+names(pred_arima) <- "arima"
+
+pred_arima <- ts(pred_arima$arima, start=c(2020, 1), end = c(2020, 12), frequency = 52)
+
+accuracy(pred_arima, truth_vector)
+
+```

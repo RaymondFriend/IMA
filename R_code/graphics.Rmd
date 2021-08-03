@@ -1,0 +1,241 @@
+
+# Benchmark models
+
+```{r message = FALSE, warning = FALSE}
+# Load packages
+library(plyr)
+library(fpp3)
+library(tsibble)
+library(forecast)
+library(zoo)
+```
+
+
+```{r}
+#read in the interpolated data
+data_raw <- readr::read_csv(file = 'data/Fresno/data_interpolated_with_diesel.csv') %>%
+  select(-X1)
+
+data_ts <- data_raw %>%
+  mutate(yw = yearweek(yw)) %>%
+  as_tsibble(key = c(Mode,ORegionDAT, DRegionDAT), index = yw) 
+```
+# plot raw data
+
+```{r}
+data_ts %>%
+  dplyr::filter(Mode =="R", DRegionDAT=="IL_CHI") %>%
+  dplyr::select(Mode, ORegionDAT, DRegionDAT, yw, approx_cost) %>%
+  autoplot() +
+  labs(title="Shipping cost per mile, Fresno to Boston, refrigerated trucks", y = "Cost", x="Time")
+```
+
+# truncate data and create training set
+```{r}
+#make into univariate approx_cost series for just Chicago R, and only up through the end of 2019
+data <- data_raw %>%
+  dplyr::filter(Mode =="R", DRegionDAT=="IL_CHI") %>%
+  select(Mode, ORegionDAT, DRegionDAT, yw, approx_cost) %>%
+  dplyr::filter(yw <= "2019 W52") %>%
+  drop_na()
+
+data_ts <- data %>%
+  mutate(yw = yearweek(yw)) %>%
+  as_tsibble(key = c(Mode,ORegionDAT, DRegionDAT), index = yw)
+
+train <- data %>%
+  dplyr::filter(yw < "2019 W01")
+
+train_ts <- train %>%
+  mutate(yw = yearweek(yw)) %>%
+  as_tsibble(key = c(Mode,ORegionDAT, DRegionDAT), index = yw)
+```
+
+
+# UNIVARIATE models
+
+## Benchmark SNAIVE
+```{r}
+#fit model
+fit <- train_ts %>%
+  model(
+    `Seasonal naïve` = SNAIVE(approx_cost)
+  )
+```
+
+```{r}
+#generate forecast
+fc_snaive <- fit %>% forecast(h = 52)
+```
+
+```{r}
+# Plot forecast
+fc_snaive %>%
+  autoplot(train_ts, level=NULL) +
+  autolayer(data_ts, colour = "black") +
+  labs(title="SNaive")+
+  ylim(0.5,3.5)
+```
+
+# STL ETS
+
+```{r}
+#fit model
+fit_dcmp <- train_ts %>%
+  model(stlf = decomposition_model(
+    STL(approx_cost),
+    SNAIVE(season_year),
+    ETS(season_adjust)
+  ))
+```
+
+```{r}
+#forecast
+fc_stl_ets <- fit_dcmp %>% forecast(h = 52)
+```
+
+```{r}
+#plot
+fc_stl_ets %>%
+  autoplot(train_ts) +
+  autolayer(data_ts, colour = "black") +
+  labs(title="STL with SNAIVE and ETS", y="Cost", x="Time") +
+  ylim(0.3,3.55)
+```
+
+
+# Repeating Grace's SARIMA model with the regular train-test split
+
+```{r}
+# Import the interpolated data with diesel
+data_raw <- readr::read_csv(file = 'data/Fresno/data_interpolated_with_diesel.csv') %>%
+  dplyr::select(-X1) %>%
+  dplyr::select(Mode, ORegionDAT, DRegionDAT, tmax, prcp, diesel_price, yw, approx_cost) %>%
+  drop_na()
+
+data_raw
+```
+
+```{r}
+# Have to split it up this way in order to get around my computer disliking the "filter_index" command (has to do with Rcpp)
+
+data <- data_raw %>%
+  dplyr::filter(yw <= "2019 W53" & Mode == "R" & DRegionDAT == "IL_CHI")
+
+data_ts <- data %>%
+  mutate(yw = yearweek(yw)) %>%
+  as_tsibble(key = c(Mode, ORegionDAT, DRegionDAT), index = yw)
+
+train <- data %>%
+  dplyr::filter(yw <= "2019 W01") 
+
+train_ts <- train %>%
+  mutate(yw = yearweek(yw)) %>%
+  as_tsibble(key = c(Mode, ORegionDAT, DRegionDAT), index = yw)
+
+# Truth is provided for all external variables during this session
+future_data <- data %>%
+  dplyr::filter(yw > "2019 W01") 
+
+future_data_ts <- future_data %>%
+  mutate(yw = yearweek(yw)) %>%
+  as_tsibble(key = c(Mode, ORegionDAT, DRegionDAT), index = yw)
+```
+
+```{r}
+# Fit this training data
+fit <- train_ts %>%
+  model(ARIMA(approx_cost ~ tmax + prcp + diesel_price))
+
+# Forecast 
+fc <- fit %>% forecast(new_data = future_data_ts)
+
+# Accuracy
+acc <- fc %>% accuracy(data_ts)
+acc
+
+# Plot
+fc %>%
+  autoplot(train_ts) +
+  autolayer(data_ts, approx_cost, colour = "black") +
+  labs(title="SARIMA with Temp. High, Precipitation, and Diesel Prices") +
+  xlab("Date") + ylab("Cost of Travel per unit Distance ($/mile)") +
+  ylim(0.3,3.55)
+```
+
+
+# Time to try Cross-Validation again...
+
+Idea is to roll through the data and create a model each time a new week's data gets introduced. Taking an average of the error for each rolling step gives us a good measure of our error in this choice of model for our time series. 
+
+I expect to run into an error with cross validation again, but let's try it anyway.
+
+Let's make the choice to have all of the data across Jan 1 2017 to Dec 31 2020 to be part of this cross validation, and keep the remaining data (up until mid 2021) unused. This possible training data is stored in `train` and `train_ts` (in different formats: tibble vs. tsibble). 
+
+```{r}
+data <- data_raw
+
+data_ts <- data %>%
+  mutate(yw = yearweek(yw)) %>%
+  as_tsibble(key = c(Mode, ORegionDAT, DRegionDAT), index = yw)
+
+train <- data %>%
+  dplyr::filter(yw <= "2020 W53") 
+
+train_ts <- train %>%
+  mutate(yw = yearweek(yw)) %>%
+  as_tsibble(key = c(Mode, ORegionDAT, DRegionDAT), index = yw)
+```
+
+Next, in `cv_train` I will store the stretched-out version of `train_ts`, a tsibble object which will have an extra key called `.id` denoting which iteration it will belong to.
+
+```{r}
+# Time series cross-validation accuracy
+cv_train <- train_ts %>%
+  stretch_tsibble(.init = 104, .step = 1) %>%
+  relocate(.id, yw, Mode, ORegionDAT, DRegionDAT, approx_cost)
+
+cv_train
+```
+
+Now it is time to run the Cross Validation. This is very likely to break, but not in the way that kindly lets you know immediately. It will stall for upwards of half an hour and then say "whoops, what happened"? Rather rude.
+
+```{r}
+
+#Ignore this, Rcpp gives me an error again
+
+convert_id_to_yw <- function (id) {
+  
+  year = floor(id / 52) + 2019
+  week = id - year * 52
+  week_string = paste("W", str(week))
+  if(week < 10) {
+    week_string = paste("0", week_string)
+  }
+  year_week = paste(str(year), " ", str(week))
+  
+  return(yearweek(year_week))
+}
+
+```
+
+```{r}
+# TSCV accuracy
+cv_models <- cv_train %>%
+  model(ARIMA(approx_cost ~ tmax))
+
+cv_models %>%
+  forecast(new_data = data_ts, h = 12) %>%
+  accuracy(data_ts)
+```
+
+```{r}
+harvest <- tsibble(
+  year = rep(2010:2012, 2),
+  fruit = rep(c("kiwi", "cherry"), each = 3),
+  kilo = sample(1:10, size = 6),
+  key = fruit, index = year
+)
+harvest %>%
+  stretch_tsibble()
+```

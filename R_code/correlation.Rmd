@@ -1,0 +1,61 @@
+# Correlation
+
+```{r message = FALSE, warning = FALSE}
+# Load packages
+library(tidyverse)
+library(plyr)
+library(dplyr)
+library(tsibble)
+library(ggplot2)
+library(feasts)
+library(lubridate)
+library(GGally)
+```
+
+
+```{r}
+#read in the data as a tsibble
+data <- readr::read_csv(file = 'data/data_shipping_and_weather_joined_cleaned.csv') %>%
+  mutate(yw = yearweek(yw)) %>%
+  select(-X1) %>%
+  as_tsibble(key = c(Mode,ORegionDAT, DRegionDAT), index = yw) 
+
+head(data)
+
+autoplot(data, sanitized_cost)
+```
+# Preliminary correlation visualization
+
+```{r}
+data %>%
+  filter(Mode=="R" & DRegionDAT =="IL_CHI") %>%
+  GGally::ggpairs(columns = 5:9) +
+  labs(title = "Chicago R")
+
+data %>%
+  filter(Mode=="R" & DRegionDAT =="MA_BOS") %>%
+  GGally::ggpairs(columns = 5:9) +
+  labs(title = "Boston R")
+
+data %>%
+  filter(Mode=="V" & DRegionDAT =="IL_CHI") %>%
+  GGally::ggpairs(columns = 5:9) +
+  labs(title = "Chicago V")
+
+data %>%
+  filter(Mode=="V" & DRegionDAT =="MA_BOS") %>%
+  GGally::ggpairs(columns = 5:9) +
+  labs(title = "Boston V")
+```
+
+Temperature:
+* It looks as though R trucking prices correlate positively with temperature (highest correlation with tmax, lower with tavg, yet lower with tmin).
+* However, V trucking prices don't really have a correlation with temperature. 
+
+
+As far as precipitation goes: 
+* R trucking prices have a negative correlation with precipitation. However, precipitation and temperature also have a negative correlation, so it's not clear if precipitation actually affects trucking prices, or if it just tends to rain less on hot days when more refrigeration is needed. 
+* V trucking prices also have a negative correlation with precipitation, almost as much as R trucking prices do. But V trucking prices don't correlate with temperature. So maybe the precipitation is actually causally affecting prices? Not certain why that would be.
+
+
+

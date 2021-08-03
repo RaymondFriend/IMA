@@ -1,0 +1,70 @@
+Ask Grace about the missing data still.
+
+
+---
+output:
+  pdf_document: default
+  html_document: default
+---
+```{r message = FALSE, warning = FALSE}
+# Load packages
+library(tidyverse)
+library(plyr)
+library(dplyr)
+library(tsibble)
+library(ggplot2)
+library(feasts)
+library(lubridate)
+library(zoo)
+```
+
+
+```{r}
+#read in the data as a tsibble
+data <- readr::read_csv(file = 'data/data_shipping_and_weather_joined_cleaned.csv') %>%
+  mutate(yw = yearweek(yw)) %>%
+  select(-X1) %>%
+  as_tsibble(key = c(Mode,ORegionDAT, DRegionDAT), index = yw) 
+
+data
+
+autoplot(data, sanitized_cost)
+```
+Fill in missing data using linear interpolation
+```{r}
+chi_r_data_interpolated <- data %>%
+  filter(Mode=="R" & DRegionDAT =="IL_CHI") %>%
+  mutate(approx_cost = na.approx(sanitized_cost, maxgap = Inf, na.rm = FALSE))
+
+chi_v_data_interpolated <- data %>%
+  filter(Mode=="V" & DRegionDAT =="IL_CHI") %>%
+  mutate(approx_cost = na.approx(sanitized_cost, maxgap = Inf,na.rm = FALSE))
+
+bos_r_data_interpolated <- data %>%
+  filter(Mode=="R" & DRegionDAT =="MA_BOS") %>%
+  mutate(approx_cost = na.approx(sanitized_cost, maxgap = Inf,na.rm = FALSE))
+
+bos_v_data_interpolated <- data %>%
+  filter(Mode=="V" & DRegionDAT =="MA_BOS") %>%
+  mutate(approx_cost = na.approx(sanitized_cost, maxgap = Inf,na.rm = FALSE))
+
+chi_v_data_interpolated
+
+```
+
+
+Join the 4 interpolated data sets back into one single interpolated data set.
+
+```{r}
+data_interpolated <- bind_rows(chi_r_data_interpolated, chi_v_data_interpolated, bos_r_data_interpolated, bos_v_data_interpolated)
+```
+
+Plot what the interpolation looks like compared to the original
+```{r}
+autoplot(data_interpolated, sanitized_cost) #plot original data
+autoplot(data_interpolated, approx_cost) #plot interpolated data
+```
+## Save the interpolated data set to a csv file.
+```{r}
+write.csv(data_interpolated, "data/data_interpolated.csv")
+```

@@ -1,0 +1,104 @@
+```{r message = FALSE, warning = FALSE}
+# Load packages
+library(plyr)
+library(fpp3)
+library(tsibble)
+library(forecast)
+library(zoo)
+library(dplyr)
+library(tidyverse)
+library(ggplot2)
+library(quantmod)
+```
+
+This document specifically created a spreadsheet for the two lanes: Reefer and Van traveling from Fresno, CA to Chicago, IL. The variables included are `approx_cost`, `tmax`, `tavg`, `tmin`, `prcp`, `diesel_price`, `deaths` (cumulative), `pandemic`, `new_deaths`, `volume`, `tmax_lag_12`, `tmax_lag_8`, `tmax_lag_4`, `tmax_lag_2`, `prcp_lag_12`,  `prcp_lag_8`,  `prcp_lag_4`, and `prcp_lag_2`. Trucking volume data does not exist from Fresno to Boston.   
+
+# Import the data without lags...
+
+```{r, warning = FALSE, message = FALSE}
+# Import the data without lags
+data <- readr::read_csv(file = 'data/data_interpolated_with_volume.csv') %>%
+  dplyr::select(-X1) %>%
+  relocate(yw, Mode, ORegionDAT, DRegionDAT, approx_cost)
+
+head(data)
+```
+
+
+# Now let's add in some lags to our data !
+
+```{r}
+# Adding lags
+data <- data %>%
+  mutate(tmax_lag_12 = (cumsum(tmax) - lag(cumsum(tmax), n = 12)) / 12) %>%
+  mutate(tmax_lag_8 = (cumsum(tmax) - lag(cumsum(tmax), n = 8)) / 8) %>%
+  mutate(tmax_lag_4 = (cumsum(tmax) - lag(cumsum(tmax), n = 4)) / 4) %>%
+  mutate(tmax_lag_2 = (cumsum(tmax) - lag(cumsum(tmax), n = 2)) / 2) %>%
+  mutate(prcp_lag_12 = (cumsum(prcp) - lag(cumsum(prcp), n = 12)) / 12) %>%
+  mutate(prcp_lag_8 = (cumsum(prcp) - lag(cumsum(prcp), n = 8)) / 8) %>%
+  mutate(prcp_lag_4 = (cumsum(prcp) - lag(cumsum(prcp), n = 4)) / 4) %>%
+  mutate(prcp_lag_2 = (cumsum(prcp) - lag(cumsum(prcp), n = 2)) / 2) 
+
+head(data)
+```
+
+# Finally, write a CSV file with everything stitched together:
+
+```{r, eval = FALSE}
+# Write to a CSV
+write.csv(data, "data/data_interpolated_with_lags.csv")
+```
+
+# Bonus: if you ever want to use this data, here's how I would call it:
+
+```{r warning = FALSE, message = FALSE}
+# Calling the new data
+data <- readr::read_csv(file = 'data/data_interpolated_with_lags.csv') %>%
+  dplyr::select(-X1) %>%
+  dplyr:: filter(Mode == "R" & DRegionDAT == "IL_CHI") %>%
+  drop_na() %>% # note that because we have a lag of 12 in two regressors, the first 12 rows of the data set will get dropped here
+  mutate(yw = yearweek(yw)) %>%
+  as_tsibble(key = c(Mode, ORegionDAT, DRegionDAT), index = yw)
+
+head(data)
+```
+
+
+
+
+
+
+
+Let's see how this model performs. Liz measured a MAPE of 21.
+```{r}
+
+train <- readr::read_csv(file = 'data/data_interpolated_with_lags.csv') %>%
+  dplyr::select(-X1) %>%
+  dplyr:: filter(Mode == "R" & DRegionDAT == "IL_CHI") %>%
+  drop_na() %>% # note that because we have a lag of 12 in two regressors, the first 12 rows of the data set will get dropped here
+  dplyr::filter(yw < "2019 W01") %>%
+  mutate(yw = yearweek(yw)) %>%
+  as_tsibble(key = c(Mode, ORegionDAT, DRegionDAT), index = yw)
+
+new_model <- train %>%
+  model(ARIMA(approx_cost ~ tmax_lag_12 + tmax_lag_2 + prcp_lag_12 + prcp_lag_2 + diesel_price + new_deaths + pandemic + volume))
+
+future_data <- readr::read_csv(file = 'data/data_interpolated_with_lags.csv') %>%
+  dplyr::select(-X1) %>%
+  dplyr:: filter(Mode == "R" & DRegionDAT == "IL_CHI") %>%
+  drop_na() %>% # note that because we have a lag of 12 in two regressors, the first 12 rows of the data set will get dropped here
+  dplyr::filter(yw >= "2019 W01" & yw <= "2019 W53") %>%
+  mutate(yw = yearweek(yw)) %>%
+  dplyr::select(Mode, ORegionDAT, DRegionDAT, yw, approx_cost, tmax_lag_12, tmax_lag_2, prcp_lag_12, prcp_lag_2, diesel_price, new_deaths, pandemic, volume) %>% 
+  as_tsibble(key = c(Mode, ORegionDAT, DRegionDAT), index = yw)
+
+future_data
+
+new_forecast <- new_model %>%
+  forecast(new_data = future_data)
+
+new_forecast
+
+autoplot(new_forecast) + autolayer(data, approx_cost)
+
+```

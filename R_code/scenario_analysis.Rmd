@@ -1,0 +1,1599 @@
+---
+title: "Scenario Analysis"
+author: "Raymond Friend"
+date: "7/21/2021"
+output: html_document
+---
+(Note to self: want to do normalization at some point. Use this command: mutate_at(c("approx_cost", "prcp", "tmax", "volume", "new_deaths"), ~(scale(.) %>% as.vector)). Do not normalize the boolean `pandemic`, and maybe just scale down `new_cases` by dividing by 1,000,000 or something.)
+```{r message = FALSE, warning = FALSE}
+# Load packages
+library(plyr)
+library(fpp3)
+library(tsibble)
+library(forecast)
+library(zoo)
+library(dplyr)
+library(tidyverse)
+library(ggplot2)
+library(quantmod)
+```
+
+# Scenario Analysis
+
+## Step 1: Set up the competing models
+
+Each of the competing models should be trained throughout the entirety of the time series: from 2017 W01 to 2021 W26. And let us restrict our focus to just Reefers along the route Fresno to Chicago.
+
+### Grace's SARIMA Model: tmax, prcp, diesel_price
+
+```{r}
+# Import the interpolated data with diesel
+data <- readr::read_csv(file = 'data/data_interpolated_with_lags.csv') %>%
+  dplyr::select(-X1) %>%
+  dplyr::select(Mode, ORegionDAT, DRegionDAT, tmax, prcp, diesel_price, yw, approx_cost) %>%
+  dplyr:: filter(Mode == "R" & DRegionDAT == "IL_CHI") %>%
+  drop_na() %>%
+  mutate(yw = yearweek(yw)) %>%
+  relocate(yw, Mode, ORegionDAT, DRegionDAT, approx_cost)
+
+data_ts <- data %>%
+  as_tsibble(key = c(Mode, ORegionDAT, DRegionDAT), index = yw)
+
+train <- data # training on the entirety of the available data 
+
+train_ts <- train %>%
+  as_tsibble(key = c(Mode, ORegionDAT, DRegionDAT), index = yw)
+
+# Fit this training data
+no_covid_sarima <- train_ts %>%
+  model(ARIMA(approx_cost ~ tmax + prcp + diesel_price))
+
+```
+
+### Model with more predictors: tmax_lag_12, tmax_lag_2, prcp_lag_12, prcp_lag_2, diesel_price, new_deaths, pandemic, volume 
+
+```{r}
+#read in the interpolated data
+data <- readr::read_csv(file = 'data/data_interpolated_with_lags.csv') %>%
+  dplyr::select(Mode, ORegionDAT, DRegionDAT, yw, tmax, prcp, approx_cost, tmax_lag_12, tmax_lag_2, prcp_lag_12, prcp_lag_2, diesel_price, new_deaths, pandemic, volume) %>%
+  dplyr:: filter(Mode == "R" & DRegionDAT == "IL_CHI") %>%
+  drop_na() %>%
+  arrange(yw)
+
+data_ts <- data %>%
+  mutate(yw = yearweek(yw)) %>% 
+  as_tsibble(key = c(Mode, ORegionDAT, DRegionDAT), index = yw)
+
+train <- data # training on the entirety of the available data 
+
+train_ts <- train %>%
+  mutate(yw = yearweek(yw)) %>% 
+  as_tsibble(key = c(Mode, ORegionDAT, DRegionDAT), index = yw)
+
+# Fit this training data
+covid_sarima <- train_ts %>% 
+  model(ARIMA(approx_cost ~ tmax_lag_12 + tmax_lag_2 + prcp_lag_12 + prcp_lag_2 + diesel_price + new_deaths + pandemic + volume))
+
+```
+
+
+## Step 2: Instantiate the Scenarios
+
+We would like to create a set of scenarios that explore some interesting possibilities. For instance, the emergence of a variant of the SARS-CoV-2 virus (e.g., the Delta variant), could place us back into another pandemic. What could the price of trucking from Fresno to Chicago with a Reefer look like in that scenario? Or what about during a drought? Or a significantly warmer year? Either way, we will have to establish a baseline. To do this, we will make univariate ARIMA models for each of the non-COVID regressors: `tmax`, `prcp`, `diesel_price`, `tmax_lag_12`, `tmax_lag_2`, `prcp_lag_12`, `prcp_lag_2`, and `volume`. For non-COVID times, we will set deaths to be zero. 
+
+# Scenario 0: Base line.
+
+For this scenario, we will create ARIMA/simple models for each of the non-COVID regressors: `tmax`, `prcp`, `diesel_price`, `tmax_lag_12`, `tmax_lag_2`, `prcp_lag_12`, `prcp_lag_2`, and `volume`. We will basically assume that temperature maximum, precipitation, and diesel price will stay the same. I do not know how well the ARIMA models will do, but I can plot them against the training set as a sanity check. For COVID false, I will create vectors that are just 0 for `new_deaths` and 0 for `pandemic`. I will also create a copy of the first year of COVID's new deaths in order to have a baseline curve for deaths. 
+
+```{r}
+
+# Temperature 
+tmax_model <- train_ts %>%
+  model(ARIMA(tmax))
+
+tmax_forecast <- tmax_model %>% 
+  forecast(h = 52)
+
+tmax_forecast %>% autoplot() +
+  autolayer(train_ts %>% select(tmax))
+
+tmax_forecast <- tmax_forecast %>%
+  as_tsibble(key=c(Mode, ORegionDAT, DRegionDAT), index = yw)  %>%
+  dplyr::select(-tmax) %>%
+  mutate(tmax = .mean) %>%
+  dplyr::select(-.mean, -.model)
+
+# Temperature Lagged 12 weeks
+tmax_lag_12_model <- train_ts %>%
+  model(ARIMA(tmax_lag_12))
+
+tmax_lag_12_forecast <- tmax_lag_12_model %>% 
+  forecast(h = 52)
+
+tmax_lag_12_forecast %>% autoplot() +
+  autolayer(train_ts %>% select(tmax_lag_12))
+
+tmax_lag_12_forecast <- tmax_lag_12_forecast %>%
+  as_tsibble(key=c(Mode, ORegionDAT, DRegionDAT), index = yw)  %>%
+  dplyr::select(-tmax_lag_12) %>%
+  mutate(tmax_lag_12 = .mean) %>%
+  dplyr::select(-.mean, -.model)
+
+# Temperature Lagged 2 weeks
+tmax_lag_2_model <- train_ts %>%
+  model(ARIMA(tmax_lag_2))
+
+tmax_lag_2_forecast <- tmax_lag_2_model %>% 
+  forecast(h = 52)
+
+tmax_lag_2_forecast %>% autoplot() +
+  autolayer(train_ts %>% select(tmax_lag_2))
+
+tmax_lag_2_forecast <- tmax_lag_2_forecast %>%
+  as_tsibble(key=c(Mode, ORegionDAT, DRegionDAT), index = yw)  %>%
+  dplyr::select(-tmax_lag_2) %>%
+  mutate(tmax_lag_2 = .mean) %>%
+  dplyr::select(-.mean, -.model)
+
+  # Combine all Temperature together
+
+tmax_forecast <- tmax_forecast %>%
+  mutate(tmax_lag_12 = tmax_lag_12_forecast$tmax_lag_12) %>%
+  mutate(tmax_lag_2 = tmax_lag_2_forecast$tmax_lag_2)
+
+
+# Precipitation 
+#  (had to eliminate 2020 W53 since tmax_forecast doesn't have that week. hopefully doesn't make a difference)
+
+prcp_forecast <- train %>%
+  dplyr::filter(yw >= "2020 W27" & yw <= "2021 W26") %>%
+  dplyr::select(yw, Mode, ORegionDAT, DRegionDAT, prcp) %>%
+  dplyr::filter(yw != "2020 W53") %>%
+  mutate(yw = tmax_forecast$yw) %>%
+  mutate(yw = yearweek(yw)) %>% 
+  as_tsibble(key=c(Mode, ORegionDAT, DRegionDAT), index = yw) 
+
+# Precipitation Lagged 12 weeks
+
+prcp_lag_12_model <- train_ts %>%
+  model(ARIMA(prcp_lag_12))
+
+prcp_lag_12_forecast <- prcp_lag_12_model %>% 
+  forecast(h = 52)
+
+prcp_lag_12_forecast %>% autoplot() +
+  autolayer(train_ts %>% select(prcp_lag_12))
+
+prcp_lag_12_forecast <- prcp_lag_12_forecast %>%
+  as_tsibble(key=c(Mode, ORegionDAT, DRegionDAT), index = yw)  %>%
+  dplyr::select(-prcp_lag_12) %>%
+  mutate(prcp_lag_12 = .mean) %>%
+  dplyr::select(-.mean, -.model)
+
+# Precipitation Lagged 2 weeks
+prcp_lag_2_forecast <- train %>%
+  dplyr::filter(yw >= "2020 W27" & yw <= "2021 W26") %>%
+  dplyr::select(yw, Mode, ORegionDAT, DRegionDAT, prcp_lag_2) %>%
+  dplyr::filter(yw != "2020 W53") %>%
+  mutate(yw = tmax_forecast$yw) %>%
+  mutate(yw = yearweek(yw)) %>% 
+  as_tsibble(key=c(Mode, ORegionDAT, DRegionDAT), index = yw) 
+
+  # Combine all Precipitation together
+
+prcp_forecast <- prcp_forecast %>%
+  mutate(prcp_lag_12 = prcp_lag_12_forecast$prcp_lag_12) %>%
+  mutate(prcp_lag_2 = prcp_lag_2_forecast$prcp_lag_2)
+
+
+# Diesel 
+
+# I can't get the STL one to run on my computer
+# diesel_price_model <- train_ts %>%
+#   model(stlf = decomposition_model(
+#     STL(diesel_price),
+#     SNAIVE(season_year),
+#     ARIMA(season_adjust)
+#   ))
+
+diesel_price_model <- train_ts %>%
+  model(ARIMA(diesel_price))
+
+diesel_price_forecast <- diesel_price_model %>% 
+  forecast(h = 52)
+
+diesel_price_forecast %>% autoplot() +
+  autolayer(train_ts %>% select(diesel_price))
+
+diesel_price_forecast <- diesel_price_forecast %>%
+  as_tsibble(key=c(Mode, ORegionDAT, DRegionDAT), index = yw)  %>%
+  dplyr::select(-diesel_price) %>%
+  mutate(diesel_price = .mean) %>%
+  dplyr::select(-.mean, -.model)
+
+diesel_price_forecast
+
+
+# Volume
+volume_model <- train_ts %>%
+  model(ARIMA(volume))
+
+volume_forecast <- volume_model %>% 
+  forecast(h = 52)
+
+volume_forecast %>% autoplot() +
+  autolayer(train_ts %>% select(volume))
+
+volume_forecast <- volume_forecast %>%
+  as_tsibble(key=c(Mode, ORegionDAT, DRegionDAT), index = yw)  %>%
+  dplyr::select(-volume) %>%
+  mutate(volume = .mean) %>%
+  dplyr::select(-.mean, -.model)
+
+# No-COVID
+no_covid_forecast <- tmax_forecast %>%
+  mutate(new_deaths = 0 * tmax) %>%
+  mutate(pandemic = 0) %>%
+  select(-tmax)
+
+# Yes-COVID
+yes_covid_forecast <- train %>%
+  dplyr::filter(yw >= "2020 W13" & yw <= "2021 W12") %>%
+  dplyr::select(yw, Mode, ORegionDAT, DRegionDAT, new_deaths, pandemic) %>%
+  dplyr::filter(yw != "2020 W53") %>%
+  mutate(pandemic = 1) %>%
+  mutate(yw = tmax_forecast$yw) %>%
+  mutate(yw = yearweek(yw)) %>% 
+  as_tsibble(key=c(Mode, ORegionDAT, DRegionDAT), index = yw) 
+```
+
+Using the base amounts, we can build the next building blocks, including many scenarios for individual variables. The full scenarios will be built using combinations of these variable scenarios.
+
+```{r}
+
+# COVID spikes
+yes_covid_100 <- yes_covid_forecast
+yes_covid_50 <- yes_covid_forecast %>%
+  mutate(new_deaths = new_deaths * 0.5)
+yes_covid_25 <- yes_covid_forecast %>%
+  mutate(new_deaths = new_deaths * 0.25)
+yes_covid_10 <- yes_covid_forecast %>%
+  mutate(new_deaths = new_deaths * 0.1)
+no_covid <- no_covid_forecast
+
+# Droughts or Floods
+prcp_125 <- prcp_forecast %>%
+  mutate(prcp = prcp * 1.25) %>%
+  mutate(prcp_lag_12 = prcp_lag_12 * 1.25) %>%
+  mutate(prcp_lag_2 = prcp_lag_2 * 1.25)
+prcp_110 <- prcp_forecast %>%
+  mutate(prcp = prcp * 1.1) %>%
+  mutate(prcp_lag_12 = prcp_lag_12 * 1.1) %>%
+  mutate(prcp_lag_2 = prcp_lag_2 * 1.1)
+prcp_100 <- prcp_forecast
+prcp_75 <- prcp_forecast %>%
+  mutate(prcp = prcp * 0.75) %>%
+  mutate(prcp_lag_12 = prcp_lag_12 * 0.75) %>%
+  mutate(prcp_lag_2 = prcp_lag_2 * 0.75)
+prcp_50 <- prcp_forecast %>%
+  mutate(prcp = prcp * 0.5) %>%
+  mutate(prcp_lag_12 = prcp_lag_12 * 0.5) %>%
+  mutate(prcp_lag_2 = prcp_lag_2 * 0.5)
+prcp_25 <- prcp_forecast %>%
+  mutate(prcp = prcp * 0.25) %>%
+  mutate(prcp_lag_12 = prcp_lag_12 * 0.25) %>%
+  mutate(prcp_lag_2 = prcp_lag_2 * 0.25)
+prcp_0 <- prcp_forecast %>%
+  mutate(prcp = prcp * 0) %>%
+  mutate(prcp_lag_12 = prcp_lag_12 * 0) %>%
+  mutate(prcp_lag_2 = prcp_lag_2 * 0)
+
+# Melts or Freezes
+tmax_105 <- tmax_forecast %>%
+  mutate(tmax = tmax * 1.05) %>%
+  mutate(tmax_lag_12 = tmax_lag_12 * 1.05) %>%
+  mutate(tmax_lag_2 = tmax_lag_2 * 1.05)
+tmax_102 <- tmax_forecast %>%
+  mutate(tmax = tmax * 1.02) %>%
+  mutate(tmax_lag_12 = tmax_lag_12 * 1.02) %>%
+  mutate(tmax_lag_2 = tmax_lag_2 * 1.02)
+tmax_100 <- tmax_forecast
+tmax_98 <- tmax_forecast %>%
+  mutate(tmax = tmax * 0.98) %>%
+  mutate(tmax_lag_12 = tmax_lag_12 * 0.98) %>%
+  mutate(tmax_lag_2 = tmax_lag_2 * 0.98)
+tmax_95 <- tmax_forecast %>%
+  mutate(tmax = tmax * 0.95) %>%
+  mutate(tmax_lag_12 = tmax_lag_12 * 0.95) %>%
+  mutate(tmax_lag_2 = tmax_lag_2 * 0.95)
+
+# Diesel spikes or crashes
+diesel_price_140 <- diesel_price_forecast %>%
+  mutate(diesel_price = diesel_price * 1.4)
+diesel_price_120 <- diesel_price_forecast %>%
+  mutate(diesel_price = diesel_price * 1.2)
+diesel_price_100 <- diesel_price_forecast
+diesel_price_80 <- diesel_price_forecast %>%
+  mutate(diesel_price = diesel_price * 0.8)
+diesel_price_60 <- diesel_price_forecast %>%
+  mutate(diesel_price = diesel_price * 0.6)
+
+# Volume flexes or folds
+volume_140 <- volume_forecast %>%
+  mutate(volume = volume * 1.4)
+volume_120 <- volume_forecast %>%
+  mutate(volume = volume * 1.2)
+volume_100 <- volume_forecast
+volume_80 <- volume_forecast %>%
+  mutate(volume = volume * 0.8)
+volume_60 <- volume_forecast %>%
+  mutate(volume = volume * 0.6)
+
+```
+
+
+Let's now create a standard way to combine `tmax`, `prcp`, `diesel`, and COVID data into a single future value of predictors to be used by either of the two `approx_cost` models defined above. 
+
+```{r}
+generate_scenario <- function(t, p, d, q, v) {
+  # The format requried to pass in as "future" data is as follows: it can just be a tsibble with the necessary columns, or extra stuff, but make sure it only has indices (yw) during the time you want to be predicted. That's easy. We can combine the parameters t, p, d, q pretty easily.
+  future_values <- t %>%
+    mutate(prcp = p$prcp) %>%
+    mutate(prcp_lag_12 = p$prcp_lag_12) %>%
+    mutate(prcp_lag_2 = p$prcp_lag_2) %>%
+    mutate(diesel_price = d$diesel_price) %>%
+    mutate(pandemic = q$pandemic) %>%
+    mutate(new_deaths = q$new_deaths) %>%
+    mutate(volume = v$volume)
+  
+  future_values
+}
+```
+
+Let's also create forecasting and plotting functions to shorten the code.
+
+```{r}
+
+# Solution to allow for returning two values as output of a function.
+':=' <- function(lhs, rhs) {
+  frame <- parent.frame()
+  lhs <- as.list(substitute(lhs))
+  if (length(lhs) > 1)
+    lhs <- lhs[-1]
+  if (length(lhs) == 1) {
+    do.call(`=`, list(lhs[[1]], rhs), envir=frame)
+    return(invisible(NULL)) 
+  }
+  if (is.function(rhs) || is(rhs, 'formula'))
+    rhs <- list(rhs)
+  if (length(lhs) > length(rhs))
+    rhs <- c(rhs, rep(list(NULL), length(lhs) - length(rhs)))
+  for (i in 1:length(lhs))
+    do.call(`=`, list(lhs[[i]], rhs[[i]]), envir=frame)
+  return(invisible(NULL)) 
+}
+
+# Forecaster
+forecast_futures <- function(FUTURE, TITLE, COLOR1, COLOR2) {
+  
+  # Forecast 
+    # no covid regressors used
+  no_covid_sarima_prediction <- no_covid_sarima %>%
+    forecast(new_data = FUTURE) %>%
+    as_tsibble(key=c(Mode, ORegionDAT, DRegionDAT), index = yw)  %>%
+    dplyr::select(.mean, Mode, ORegionDAT, DRegionDAT) %>%
+    mutate(approx_cost = .mean) %>%
+    dplyr::select(-.mean) 
+    #covid regressors used
+  covid_sarima_prediction <- covid_sarima %>%
+    forecast(new_data = FUTURE) %>%
+    as_tsibble(key=c(Mode, ORegionDAT, DRegionDAT), index = yw)  %>%
+    dplyr::select(.mean, Mode, ORegionDAT, DRegionDAT) %>%
+    mutate(approx_cost = .mean) %>%
+    dplyr::select(-.mean) 
+  
+  return(list(no_covid_sarima_prediction, covid_sarima_prediction))
+}
+
+# Plotter
+plot_forecasts <- function(history, no_covid_sarima_prediction, covid_sarima_prediction, FILENAME) {
+  
+  if(history) {
+    # Plot with the historical data
+    ggplot(mapping = aes(x = yw, y = approx_cost), dev="png") + 
+      geom_line(data = train_ts, color = "black") +
+      geom_line(data = no_covid_sarima_prediction, color = COLOR1) +
+      geom_line(data = covid_sarima_prediction, color = COLOR2) +
+      labs(title=TITLE) + 
+      xlab('Date') +
+      ylab('Cost per unit Distance ($/mile)')
+    } else {
+    # Plot without the historical data
+    ggplot(mapping = aes(x = yw, y = approx_cost), dev="png") +
+      geom_line(data = no_covid_sarima_prediction, color = COLOR1) +
+      geom_line(data = covid_sarima_prediction, color = COLOR2) +
+      labs(title=TITLE) + 
+      xlab('Date') +
+      ylab('Cost per unit Distance ($/mile)')
+    }
+  ggsave(FILENAME, width = 20, height = 15, units = "cm")
+}
+
+```
+
+## Step 3. Predict on the Scenarios
+
+In this step, we run both models on the intended scenarios. 
+
+### Scenario 0: Base Case. Assume all levels are normal, no COVID
+```{r}
+
+# Scenario 0: base case.
+  
+  # Generate future data
+  future <- generate_scenario(
+    t = tmax_100,
+    p = prcp_100,
+    d = diesel_price_100,
+    q = no_covid, 
+    v = volume_100
+  )
+
+  # Variables to change
+  TITLE <- "Base Case Scenario"
+  COLOR1 <- "red"
+  COLOR2 <- "blue"
+  FILE1 <- "scenario_analysis_images/Friday/0_historical.png"
+  FILE2 <- "scenario_analysis_images/Friday/0_ahistorical.png"
+  
+  # Shortcuts
+  c(no_covid_forecast, covid_forecast) := forecast_futures(future, TITLE, COLOR1, COLOR2)
+  plot_forecasts(TRUE, no_covid_forecast, covid_forecast, FILE1)
+  plot_forecasts(FALSE, no_covid_forecast, covid_forecast, FILE2)
+  
+  # Save for later (have to change the number at the end of the names)
+  no_covid_forecast_0 = no_covid_forecast
+  covid_forecast_0 = covid_forecast
+
+```
+
+### Scenario 1: Delta Variant. Assume all levels are normal, no COVID
+```{r}
+
+# Scenario 1: Delta variant.
+  
+  # Scenario 1a: 100%
+    # Generate future data
+    future <- generate_scenario(
+      t = tmax_100,
+      p = prcp_100,
+      d = diesel_price_100,
+      q = yes_covid_100, 
+      v = volume_100
+    )
+  
+    # Variables to change
+    TITLE <- "Delta Variant, 100% previous Pandemic"
+    COLOR1 <- "red"
+    COLOR2 <- "blue"
+    FILE1 <- "scenario_analysis_images/Friday/1a_historical.png"
+    FILE2 <- "scenario_analysis_images/Friday/1a_ahistorical.png"
+    
+    # Shortcuts
+    c(no_covid_forecast, covid_forecast) := forecast_futures(future, TITLE, COLOR1, COLOR2)
+    plot_forecasts(TRUE, no_covid_forecast, covid_forecast, FILE1)
+    plot_forecasts(FALSE, no_covid_forecast, covid_forecast, FILE2)
+    
+    # Save for later (have to change the number at the end of the names)
+    no_covid_forecast_1a = no_covid_forecast
+    covid_forecast_1a = covid_forecast
+    
+  # Scenario 1b: 50%
+    # Generate future data
+    future <- generate_scenario(
+      t = tmax_100,
+      p = prcp_100,
+      d = diesel_price_100,
+      q = yes_covid_50, 
+      v = volume_100
+    )
+  
+    # Variables to change
+    TITLE <- "Delta Variant, 50% previous Pandemic"
+    COLOR1 <- "red"
+    COLOR2 <- "blue"
+    FILE1 <- "scenario_analysis_images/Friday/1b_historical.png"
+    FILE2 <- "scenario_analysis_images/Friday/1b_ahistorical.png"
+    
+    # Shortcuts
+    c(no_covid_forecast, covid_forecast) := forecast_futures(future, TITLE, COLOR1, COLOR2)
+    plot_forecasts(TRUE, no_covid_forecast, covid_forecast, FILE1)
+    plot_forecasts(FALSE, no_covid_forecast, covid_forecast, FILE2)
+    
+    # Save for later (have to change the number at the end of the names)
+    no_covid_forecast_1b = no_covid_forecast
+    covid_forecast_1b = covid_forecast
+    
+  # Scenario 1c: 25%
+    # Generate future data
+    future <- generate_scenario(
+      t = tmax_100,
+      p = prcp_100,
+      d = diesel_price_100,
+      q = yes_covid_25, 
+      v = volume_100
+    )
+  
+    # Variables to change
+    TITLE <- "Delta Variant, 25% previous Pandemic"
+    COLOR1 <- "red"
+    COLOR2 <- "blue"
+    FILE1 <- "scenario_analysis_images/Friday/1c_historical.png"
+    FILE2 <- "scenario_analysis_images/Friday/1c_ahistorical.png"
+    
+    # Shortcuts
+    c(no_covid_forecast, covid_forecast) := forecast_futures(future, TITLE, COLOR1, COLOR2)
+    plot_forecasts(TRUE, no_covid_forecast, covid_forecast, FILE1)
+    plot_forecasts(FALSE, no_covid_forecast, covid_forecast, FILE2)
+    
+    # Save for later (have to change the number at the end of the names)
+    no_covid_forecast_1c = no_covid_forecast
+    covid_forecast_1c = covid_forecast
+    
+  # Scenario 1d: 10%
+    # Generate future data
+    future <- generate_scenario(
+      t = tmax_100,
+      p = prcp_100,
+      d = diesel_price_100,
+      q = yes_covid_10, 
+      v = volume_100
+    )
+  
+    # Variables to change
+    TITLE <- "Delta Variant, 10% previous Pandemic"
+    COLOR1 <- "red"
+    COLOR2 <- "blue"
+    FILE1 <- "scenario_analysis_images/Friday/1d_historical.png"
+    FILE2 <- "scenario_analysis_images/Friday/1d_ahistorical.png"
+    
+    # Shortcuts
+    c(no_covid_forecast, covid_forecast) := forecast_futures(future, TITLE, COLOR1, COLOR2)
+    plot_forecasts(TRUE, no_covid_forecast, covid_forecast, FILE1)
+    plot_forecasts(FALSE, no_covid_forecast, covid_forecast, FILE2)
+    
+    # Save for later (have to change the number at the end of the names)
+    no_covid_forecast_1d = no_covid_forecast
+    covid_forecast_1d = covid_forecast
+
+```
+
+### Scenario 2: Drought/Flood. Assume all other levels are the same, no COVID. 
+```{r}
+
+# Scenario 2: Drought/Flood.
+  
+  # Scenario 2a: 125%
+    # Generate future data
+    future <- generate_scenario(
+      t = tmax_100,
+      p = prcp_125,
+      d = diesel_price_100,
+      q = no_covid, 
+      v = volume_100
+    )
+  
+    # Variables to change
+    TITLE <- "Flood: 125% of Rain"
+    COLOR1 <- "red"
+    COLOR2 <- "blue"
+    FILE1 <- "scenario_analysis_images/Friday/2a_historical.png"
+    FILE2 <- "scenario_analysis_images/Friday/2a_ahistorical.png"
+    
+    # Shortcuts
+    c(no_covid_forecast, covid_forecast) := forecast_futures(future, TITLE, COLOR1, COLOR2)
+    plot_forecasts(TRUE, no_covid_forecast, covid_forecast, FILE1)
+    plot_forecasts(FALSE, no_covid_forecast, covid_forecast, FILE2)
+    
+    # Save for later (have to change the number at the end of the names)
+    no_covid_forecast_2a = no_covid_forecast
+    covid_forecast_2a = covid_forecast
+    
+  # Scenario 2b: 110%
+    # Generate future data
+    future <- generate_scenario(
+      t = tmax_100,
+      p = prcp_110,
+      d = diesel_price_100,
+      q = no_covid, 
+      v = volume_100
+    )
+  
+    # Variables to change
+    TITLE <- "Flood: 110% of Rain"
+    COLOR1 <- "red"
+    COLOR2 <- "blue"
+    FILE1 <- "scenario_analysis_images/Friday/2b_historical.png"
+    FILE2 <- "scenario_analysis_images/Friday/2b_ahistorical.png"
+    
+    # Shortcuts
+    c(no_covid_forecast, covid_forecast) := forecast_futures(future, TITLE, COLOR1, COLOR2)
+    plot_forecasts(TRUE, no_covid_forecast, covid_forecast, FILE1)
+    plot_forecasts(FALSE, no_covid_forecast, covid_forecast, FILE2)
+    
+    # Save for later (have to change the number at the end of the names)
+    no_covid_forecast_2b = no_covid_forecast
+    covid_forecast_2b = covid_forecast
+    
+  # Scenario 2c: 75%
+    # Generate future data
+    future <- generate_scenario(
+      t = tmax_100,
+      p = prcp_75,
+      d = diesel_price_100,
+      q = no_covid, 
+      v = volume_100
+    )
+  
+    # Variables to change
+    TITLE <- "Drought: 75% of Rain"
+    COLOR1 <- "red"
+    COLOR2 <- "blue"
+    FILE1 <- "scenario_analysis_images/Friday/2c_historical.png"
+    FILE2 <- "scenario_analysis_images/Friday/2c_ahistorical.png"
+    
+    # Shortcuts
+    c(no_covid_forecast, covid_forecast) := forecast_futures(future, TITLE, COLOR1, COLOR2)
+    plot_forecasts(TRUE, no_covid_forecast, covid_forecast, FILE1)
+    plot_forecasts(FALSE, no_covid_forecast, covid_forecast, FILE2)
+    
+    # Save for later (have to change the number at the end of the names)
+    no_covid_forecast_2c = no_covid_forecast
+    covid_forecast_2c = covid_forecast
+    
+  # Scenario 2d: 50%
+    # Generate future data
+    future <- generate_scenario(
+      t = tmax_100,
+      p = prcp_50,
+      d = diesel_price_100,
+      q = no_covid, 
+      v = volume_100
+    )
+  
+    # Variables to change
+    TITLE <- "Drought: 50% of Rain"
+    COLOR1 <- "red"
+    COLOR2 <- "blue"
+    FILE1 <- "scenario_analysis_images/Friday/2d_historical.png"
+    FILE2 <- "scenario_analysis_images/Friday/2d_ahistorical.png"
+    
+    # Shortcuts
+    c(no_covid_forecast, covid_forecast) := forecast_futures(future, TITLE, COLOR1, COLOR2)
+    plot_forecasts(TRUE, no_covid_forecast, covid_forecast, FILE1)
+    plot_forecasts(FALSE, no_covid_forecast, covid_forecast, FILE2)
+    
+    # Save for later (have to change the number at the end of the names)
+    no_covid_forecast_2d = no_covid_forecast
+    covid_forecast_2d = covid_forecast
+  
+  # Scenario 2e: 25%
+    # Generate future data
+    future <- generate_scenario(
+      t = tmax_100,
+      p = prcp_25,
+      d = diesel_price_100,
+      q = no_covid, 
+      v = volume_100
+    )
+  
+    # Variables to change
+    TITLE <- "Drought: 25% of Rain"
+    COLOR1 <- "red"
+    COLOR2 <- "blue"
+    FILE1 <- "scenario_analysis_images/Friday/2e_historical.png"
+    FILE2 <- "scenario_analysis_images/Friday/2e_ahistorical.png"
+    
+    # Shortcuts
+    c(no_covid_forecast, covid_forecast) := forecast_futures(future, TITLE, COLOR1, COLOR2)
+    plot_forecasts(TRUE, no_covid_forecast, covid_forecast, FILE1)
+    plot_forecasts(FALSE, no_covid_forecast, covid_forecast, FILE2)
+    
+    # Save for later (have to change the number at the end of the names)
+    no_covid_forecast_2e = no_covid_forecast
+    covid_forecast_2e = covid_forecast
+    
+  # Scenario 2f: 0%
+    # Generate future data
+    future <- generate_scenario(
+      t = tmax_100,
+      p = prcp_125,
+      d = diesel_price_100,
+      q = no_covid, 
+      v = volume_100
+    )
+  
+    # Variables to change
+    TITLE <- "Drought: 0% of Rain"
+    COLOR1 <- "red"
+    COLOR2 <- "blue"
+    FILE1 <- "scenario_analysis_images/Friday/2f_historical.png"
+    FILE2 <- "scenario_analysis_images/Friday/2f_ahistorical.png"
+    
+    # Shortcuts
+    c(no_covid_forecast, covid_forecast) := forecast_futures(future, TITLE, COLOR1, COLOR2)
+    plot_forecasts(TRUE, no_covid_forecast, covid_forecast, FILE1)
+    plot_forecasts(FALSE, no_covid_forecast, covid_forecast, FILE2)
+    
+    # Save for later (have to change the number at the end of the names)
+    no_covid_forecast_2f = no_covid_forecast
+    covid_forecast_2f = covid_forecast
+
+```
+
+### Scenario 3: Melt/Freeze. Assume all other levels are the same, no COVID. 
+```{r}
+
+# Scenario 3: Melt/Freeze.
+  
+  # Scenario 3a: 105%
+    # Generate future data
+    future <- generate_scenario(
+      t = tmax_105,
+      p = prcp_100,
+      d = diesel_price_100,
+      q = no_covid, 
+      v = volume_100
+    )
+  
+    # Variables to change
+    TITLE <- "Melt: 105% of Typical Max. Temp."
+    COLOR1 <- "red"
+    COLOR2 <- "blue"
+    FILE1 <- "scenario_analysis_images/Friday/3a_historical.png"
+    FILE2 <- "scenario_analysis_images/Friday/3a_ahistorical.png"
+    
+    # Shortcuts
+    c(no_covid_forecast, covid_forecast) := forecast_futures(future, TITLE, COLOR1, COLOR2)
+    plot_forecasts(TRUE, no_covid_forecast, covid_forecast, FILE1)
+    plot_forecasts(FALSE, no_covid_forecast, covid_forecast, FILE2)
+    
+    # Save for later (have to change the number at the end of the names)
+    no_covid_forecast_3a = no_covid_forecast
+    covid_forecast_3a = covid_forecast
+    
+  # Scenario 3b: 102%
+    # Generate future data
+    future <- generate_scenario(
+      t = tmax_102,
+      p = prcp_100,
+      d = diesel_price_100,
+      q = no_covid, 
+      v = volume_100
+    )
+  
+    # Variables to change
+    TITLE <- "Melt: 102% of Typical Max. Temp."
+    COLOR1 <- "red"
+    COLOR2 <- "blue"
+    FILE1 <- "scenario_analysis_images/Friday/3b_historical.png"
+    FILE2 <- "scenario_analysis_images/Friday/3b_ahistorical.png"
+    
+    # Shortcuts
+    c(no_covid_forecast, covid_forecast) := forecast_futures(future, TITLE, COLOR1, COLOR2)
+    plot_forecasts(TRUE, no_covid_forecast, covid_forecast, FILE1)
+    plot_forecasts(FALSE, no_covid_forecast, covid_forecast, FILE2)
+    
+    # Save for later (have to change the number at the end of the names)
+    no_covid_forecast_3b = no_covid_forecast
+    covid_forecast_3b = covid_forecast
+    
+  # Scenario 3c: 98%
+    # Generate future data
+    future <- generate_scenario(
+      t = tmax_98,
+      p = prcp_100,
+      d = diesel_price_100,
+      q = no_covid, 
+      v = volume_100
+    )
+  
+    # Variables to change
+    TITLE <- "Freeze: 98% of Typical Max. Temp."
+    COLOR1 <- "red"
+    COLOR2 <- "blue"
+    FILE1 <- "scenario_analysis_images/Friday/3c_historical.png"
+    FILE2 <- "scenario_analysis_images/Friday/3c_ahistorical.png"
+    
+    # Shortcuts
+    c(no_covid_forecast, covid_forecast) := forecast_futures(future, TITLE, COLOR1, COLOR2)
+    plot_forecasts(TRUE, no_covid_forecast, covid_forecast, FILE1)
+    plot_forecasts(FALSE, no_covid_forecast, covid_forecast, FILE2)
+    
+    # Save for later (have to change the number at the end of the names)
+    no_covid_forecast_3c = no_covid_forecast
+    covid_forecast_3c = covid_forecast
+    
+  # Scenario 3d: 95%
+    # Generate future data
+    future <- generate_scenario(
+      t = tmax_95,
+      p = prcp_100,
+      d = diesel_price_100,
+      q = no_covid, 
+      v = volume_100
+    )
+  
+    # Variables to change
+    TITLE <- "Freeze: 95% of Typical Max. Temp."
+    COLOR1 <- "red"
+    COLOR2 <- "blue"
+    FILE1 <- "scenario_analysis_images/Friday/3d_historical.png"
+    FILE2 <- "scenario_analysis_images/Friday/3d_ahistorical.png"
+    
+    # Shortcuts
+    c(no_covid_forecast, covid_forecast) := forecast_futures(future, TITLE, COLOR1, COLOR2)
+    plot_forecasts(TRUE, no_covid_forecast, covid_forecast, FILE1)
+    plot_forecasts(FALSE, no_covid_forecast, covid_forecast, FILE2)
+    
+    # Save for later (have to change the number at the end of the names)
+    no_covid_forecast_3d = no_covid_forecast
+    covid_forecast_3d = covid_forecast
+
+```
+
+### Scenario 4: Diesel Spike/Dip. Assume all other levels are the same, no COVID. 
+```{r}
+
+# Scenario 4: Diesel Spike/Dip.
+  
+  # Scenario 4a: 140%
+    # Generate future data
+    future <- generate_scenario(
+      t = tmax_100,
+      p = prcp_100,
+      d = diesel_price_140,
+      q = no_covid, 
+      v = volume_100
+    )
+  
+    # Variables to change
+    TITLE <- "Diesel Spike: 140% of Typical"
+    COLOR1 <- "red"
+    COLOR2 <- "blue"
+    FILE1 <- "scenario_analysis_images/Friday/4a_historical.png"
+    FILE2 <- "scenario_analysis_images/Friday/4a_ahistorical.png"
+    
+    # Shortcuts
+    c(no_covid_forecast, covid_forecast) := forecast_futures(future, TITLE, COLOR1, COLOR2)
+    plot_forecasts(TRUE, no_covid_forecast, covid_forecast, FILE1)
+    plot_forecasts(FALSE, no_covid_forecast, covid_forecast, FILE2)
+    
+    # Save for later (have to change the number at the end of the names)
+    no_covid_forecast_4a = no_covid_forecast
+    covid_forecast_4a = covid_forecast
+    
+   # Scenario 4b: 120%
+    # Generate future data
+    future <- generate_scenario(
+      t = tmax_100,
+      p = prcp_100,
+      d = diesel_price_120,
+      q = no_covid, 
+      v = volume_100
+    )
+  
+    # Variables to change
+    TITLE <- "Diesel Spike: 120% of Typical"
+    COLOR1 <- "red"
+    COLOR2 <- "blue"
+    FILE1 <- "scenario_analysis_images/Friday/4b_historical.png"
+    FILE2 <- "scenario_analysis_images/Friday/4b_ahistorical.png"
+    
+    # Shortcuts
+    c(no_covid_forecast, covid_forecast) := forecast_futures(future, TITLE, COLOR1, COLOR2)
+    plot_forecasts(TRUE, no_covid_forecast, covid_forecast, FILE1)
+    plot_forecasts(FALSE, no_covid_forecast, covid_forecast, FILE2)
+    
+    # Save for later (have to change the number at the end of the names)
+    no_covid_forecast_4b = no_covid_forecast
+    covid_forecast_4b = covid_forecast
+    
+   # Scenario 4c: 80%
+    # Generate future data
+    future <- generate_scenario(
+      t = tmax_100,
+      p = prcp_100,
+      d = diesel_price_80,
+      q = no_covid, 
+      v = volume_100
+    )
+  
+    # Variables to change
+    TITLE <- "Diesel Dip: 80% of Typical"
+    COLOR1 <- "red"
+    COLOR2 <- "blue"
+    FILE1 <- "scenario_analysis_images/Friday/4c_historical.png"
+    FILE2 <- "scenario_analysis_images/Friday/4c_ahistorical.png"
+    
+    # Shortcuts
+    c(no_covid_forecast, covid_forecast) := forecast_futures(future, TITLE, COLOR1, COLOR2)
+    plot_forecasts(TRUE, no_covid_forecast, covid_forecast, FILE1)
+    plot_forecasts(FALSE, no_covid_forecast, covid_forecast, FILE2)
+    
+    # Save for later (have to change the number at the end of the names)
+    no_covid_forecast_4c = no_covid_forecast
+    covid_forecast_4c = covid_forecast  
+    
+  # Scenario 4d: 60%
+    # Generate future data
+    future <- generate_scenario(
+      t = tmax_100,
+      p = prcp_100,
+      d = diesel_price_60,
+      q = no_covid, 
+      v = volume_100
+    )
+  
+    # Variables to change
+    TITLE <- "Diesel Dip: 60% of Typical"
+    COLOR1 <- "red"
+    COLOR2 <- "blue"
+    FILE1 <- "scenario_analysis_images/Friday/4d_historical.png"
+    FILE2 <- "scenario_analysis_images/Friday/4d_ahistorical.png"
+    
+    # Shortcuts
+    c(no_covid_forecast, covid_forecast) := forecast_futures(future, TITLE, COLOR1, COLOR2)
+    plot_forecasts(TRUE, no_covid_forecast, covid_forecast, FILE1)
+    plot_forecasts(FALSE, no_covid_forecast, covid_forecast, FILE2)
+    
+    # Save for later (have to change the number at the end of the names)
+    no_covid_forecast_4d = no_covid_forecast
+    covid_forecast_4d = covid_forecast 
+    
+```
+
+### Scenario 5: A particularly bad year, non-COVID.
+```{r}
+
+# Scenario 5: A particularly bad year. Hot, little rain, high diesel prices, high volume. No pandemic though.
+  
+  # Generate future data
+  future <- generate_scenario(
+    t = tmax_105, 
+    p = prcp_50,
+    d = diesel_price_140,
+    q = no_covid, 
+    v = volume_140
+  )
+
+  # Variables to change
+  TITLE <- "A particularly bad year: Hot, Drought, High Diesel Prices."
+  COLOR1 <- "red"
+  COLOR2 <- "blue"
+  FILE1 <- "scenario_analysis_images/Friday/5_historical.png"
+  FILE2 <- "scenario_analysis_images/Friday/5_ahistorical.png"
+    
+  # Shortcuts
+  c(no_covid_forecast, covid_forecast) := forecast_futures(future, TITLE, COLOR1, COLOR2)
+  plot_forecasts(TRUE, no_covid_forecast, covid_forecast, FILE1)
+  plot_forecasts(FALSE, no_covid_forecast, covid_forecast, FILE2)
+  
+  # Save for later (have to change the number at the end of the names)
+  no_covid_forecast_5 = no_covid_forecast
+  covid_forecast_5 = covid_forecast
+
+```
+
+### Scenario 6: Volume Flex/Fold. Assume all other levels are the same, no COVID. 
+```{r}
+
+# Scenario 6: Volume Flex/Fold.
+  
+  # Scenario 6a: 140%
+    # Generate future data
+    future <- generate_scenario(
+      t = tmax_100,
+      p = prcp_100,
+      d = diesel_price_100,
+      q = no_covid, 
+      v = volume_140
+    )
+  
+    # Variables to change
+    TITLE <- "Volume Flex: 140% of Typical"
+    COLOR1 <- "red"
+    COLOR2 <- "blue"
+    FILE1 <- "scenario_analysis_images/Friday/6a_historical.png"
+    FILE2 <- "scenario_analysis_images/Friday/6a_ahistorical.png"
+    
+    # Shortcuts
+    c(no_covid_forecast, covid_forecast) := forecast_futures(future, TITLE, COLOR1, COLOR2)
+    plot_forecasts(TRUE, no_covid_forecast, covid_forecast, FILE1)
+    plot_forecasts(FALSE, no_covid_forecast, covid_forecast, FILE2)
+    
+    # Save for later (have to change the number at the end of the names)
+    no_covid_forecast_6a = no_covid_forecast
+    covid_forecast_6a = covid_forecast
+    
+   # Scenario 6b: 120%
+    # Generate future data
+    future <- generate_scenario(
+      t = tmax_100,
+      p = prcp_100,
+      d = diesel_price_100,
+      q = no_covid, 
+      v = volume_120
+    )
+  
+    # Variables to change
+    TITLE <- "Volume Flex: 120% of Typical"
+    COLOR1 <- "red"
+    COLOR2 <- "blue"
+    FILE1 <- "scenario_analysis_images/Friday/6b_historical.png"
+    FILE2 <- "scenario_analysis_images/Friday/6b_ahistorical.png"
+    
+    # Shortcuts
+    c(no_covid_forecast, covid_forecast) := forecast_futures(future, TITLE, COLOR1, COLOR2)
+    plot_forecasts(TRUE, no_covid_forecast, covid_forecast, FILE1)
+    plot_forecasts(FALSE, no_covid_forecast, covid_forecast, FILE2)
+    
+    # Save for later (have to change the number at the end of the names)
+    no_covid_forecast_6b = no_covid_forecast
+    covid_forecast_6b = covid_forecast
+    
+    # Scenario 6c: 80%
+    # Generate future data
+    future <- generate_scenario(
+      t = tmax_100,
+      p = prcp_100,
+      d = diesel_price_100,
+      q = no_covid, 
+      v = volume_80
+    )
+  
+    # Variables to change
+    TITLE <- "Volume Fold: 80% of Typical"
+    COLOR1 <- "red"
+    COLOR2 <- "blue"
+    FILE1 <- "scenario_analysis_images/Friday/6c_historical.png"
+    FILE2 <- "scenario_analysis_images/Friday/6c_ahistorical.png"
+    
+    # Shortcuts
+    c(no_covid_forecast, covid_forecast) := forecast_futures(future, TITLE, COLOR1, COLOR2)
+    plot_forecasts(TRUE, no_covid_forecast, covid_forecast, FILE1)
+    plot_forecasts(FALSE, no_covid_forecast, covid_forecast, FILE2)
+    
+    # Save for later (have to change the number at the end of the names)
+    no_covid_forecast_6c = no_covid_forecast
+    covid_forecast_6c = covid_forecast
+    
+    # Scenario 6d: 60%
+    # Generate future data
+    future <- generate_scenario(
+      t = tmax_100,
+      p = prcp_100,
+      d = diesel_price_100,
+      q = no_covid, 
+      v = volume_60
+    )
+  
+    # Variables to change
+    TITLE <- "Volume Fold: 60% of Typical"
+    COLOR1 <- "red"
+    COLOR2 <- "blue"
+    FILE1 <- "scenario_analysis_images/Friday/6d_historical.png"
+    FILE2 <- "scenario_analysis_images/Friday/6d_ahistorical.png"
+    
+    # Shortcuts
+    c(no_covid_forecast, covid_forecast) := forecast_futures(future, TITLE, COLOR1, COLOR2)
+    plot_forecasts(TRUE, no_covid_forecast, covid_forecast, FILE1)
+    plot_forecasts(FALSE, no_covid_forecast, covid_forecast, FILE2)
+    
+    # Save for later (have to change the number at the end of the names)
+    no_covid_forecast_6d = no_covid_forecast
+    covid_forecast_6d = covid_forecast
+    
+```
+
+
+## Step 4: Summarize the results, Combine plots
+
+```{r}
+# Establishing a color scheme
+
+pallette = c("violet", "brown", "darkblue", "maroon", "blue", "red", "skyblue", "orange", "cyan", "coral", "lightblue", "pink")
+
+palletee_colorful = c("gray", "red", "orange", "yellow", "green", "blue", "purple", "pink", "chocolate", "deepskyblue", "firebrick", "cyan", "azure", "magenta", "maroon", "", "moccasin", "darkgrey", "gold", "coral", "darkred")
+```
+
+```{r}
+# Another pandemic, Varying Levels of Death.
+# Red = most pandemic.
+  # ahistorical
+ggplot(mapping = aes(x = yw, y = approx_cost)) +
+  geom_line(data = no_covid_forecast_0, color = "darkgray") +
+  geom_line(data = covid_forecast_0, color = "gray") +
+  geom_line(data = covid_forecast_1a, color = pallette[2]) +
+  geom_line(data = covid_forecast_1b, color = pallette[4]) +
+  geom_line(data = covid_forecast_1c, color = pallette[6]) +
+  geom_line(data = covid_forecast_1d, color = pallette[8]) +
+  labs(title="Another Pandemic, Varying Levels of Deaths (10%-100%)") + xlab('Date') + ylab('Cost per unit Distance ($/mile)')
+ggsave("scenario_analysis_images/Friday/1_ahistorical_summarized.png", width = 20, height = 15, units = "cm")
+
+  # historical
+ggplot(mapping = aes(x = yw, y = approx_cost)) +
+  geom_line(data = train_ts, color = "black") +
+  geom_line(data = no_covid_forecast_0, color = "darkgray") +
+  geom_line(data = covid_forecast_0, color = "gray") +
+  geom_line(data = covid_forecast_1a, color = pallette[2]) +
+  geom_line(data = covid_forecast_1b, color = pallette[4]) +
+  geom_line(data = covid_forecast_1c, color = pallette[6]) +
+  geom_line(data = covid_forecast_1d, color = pallette[8]) +
+  labs(title="Another Pandemic, Varying Levels of Deaths (10%-100%)") + xlab('Date') + ylab('Cost per unit Distance ($/mile)')
+ggsave("scenario_analysis_images/Friday/1_historical_summarized.png", width = 20, height = 15, units = "cm")
+
+
+# Droughts vs. Floods
+# Top = No Covid
+# Bottom = Covid
+  # ahistorical
+ggplot(mapping = aes(x = yw, y = approx_cost)) +
+  geom_line(data = no_covid_forecast_0, color = "darkgray") +
+  geom_line(data = covid_forecast_0, color = "gray") +
+  geom_line(data = no_covid_forecast_2a, color = pallette[1]) +
+  geom_line(data = covid_forecast_2a, color = pallette[2]) +
+  geom_line(data = no_covid_forecast_2b, color = pallette[3]) +
+  geom_line(data = covid_forecast_2b, color = pallette[4]) +
+  geom_line(data = no_covid_forecast_2c, color = pallette[5]) +
+  geom_line(data = covid_forecast_2c, color = pallette[6]) +
+  geom_line(data = no_covid_forecast_2d, color = pallette[7]) +
+  geom_line(data = covid_forecast_2d, color = pallette[8]) +
+  geom_line(data = no_covid_forecast_2e, color = pallette[9]) +
+  geom_line(data = covid_forecast_2e, color = pallette[10]) +
+  geom_line(data = no_covid_forecast_2f, color = pallette[11]) +
+  geom_line(data = covid_forecast_2f, color = pallette[12]) +
+  labs(title="Droughts and Floods (0%-125%)") + xlab('Date') + ylab('Cost per unit Distance ($/mile)')
+ggsave("scenario_analysis_images/Friday/2_ahistorical_summarized.png", width = 20, height = 15, units = "cm")
+
+  # historical
+ggplot(mapping = aes(x = yw, y = approx_cost)) +
+  geom_line(data = train_ts, color = "black") +
+  geom_line(data = no_covid_forecast_0, color = "darkgray") +
+  geom_line(data = covid_forecast_0, color = "gray") +
+  geom_line(data = no_covid_forecast_2a, color = pallette[1]) +
+  geom_line(data = covid_forecast_2a, color = pallette[2]) +
+  geom_line(data = no_covid_forecast_2b, color = pallette[3]) +
+  geom_line(data = covid_forecast_2b, color = pallette[4]) +
+  geom_line(data = no_covid_forecast_2c, color = pallette[5]) +
+  geom_line(data = covid_forecast_2c, color = pallette[6]) +
+  geom_line(data = no_covid_forecast_2d, color = pallette[7]) +
+  geom_line(data = covid_forecast_2d, color = pallette[8]) +
+  geom_line(data = no_covid_forecast_2e, color = pallette[9]) +
+  geom_line(data = covid_forecast_2e, color = pallette[10]) +
+  geom_line(data = no_covid_forecast_2f, color = pallette[11]) +
+  geom_line(data = covid_forecast_2f, color = pallette[12]) +
+  labs(title="Droughts and Floods (0%-125%)") + xlab('Date') + ylab('Cost per unit Distance ($/mile)')
+ggsave("scenario_analysis_images/Friday/2_historical_summarized.png", width = 20, height = 15, units = "cm")
+
+
+# Melts vs. Freezes
+  # ahistorical
+ggplot(mapping = aes(x = yw, y = approx_cost)) +
+  geom_line(data = no_covid_forecast_0, color = "darkgray") +
+  geom_line(data = covid_forecast_0, color = "gray") +
+  geom_line(data = no_covid_forecast_3a, color = pallette[1]) +
+  geom_line(data = covid_forecast_3a, color = pallette[2]) +
+  geom_line(data = no_covid_forecast_3b, color = pallette[3]) +
+  geom_line(data = covid_forecast_3b, color = pallette[4]) +
+  geom_line(data = no_covid_forecast_3c, color = pallette[5]) +
+  geom_line(data = covid_forecast_3c, color = pallette[6]) +
+  geom_line(data = no_covid_forecast_3d, color = pallette[7]) +
+  geom_line(data = covid_forecast_3d, color = pallette[8]) +
+  labs(title="Melts and Freezes (95%-105%)") + xlab('Date') + ylab('Cost per unit Distance ($/mile)')
+ggsave("scenario_analysis_images/Friday/3_ahistorical_summarized.png", width = 20, height = 15, units = "cm")
+
+  # historical
+ggplot(mapping = aes(x = yw, y = approx_cost)) +
+  geom_line(data = train_ts, color = "black") +
+  geom_line(data = no_covid_forecast_0, color = "darkgray") +
+  geom_line(data = covid_forecast_0, color = "gray") +
+  geom_line(data = no_covid_forecast_3a, color = pallette[1]) +
+  geom_line(data = covid_forecast_3a, color = pallette[2]) +
+  geom_line(data = no_covid_forecast_3b, color = pallette[3]) +
+  geom_line(data = covid_forecast_3b, color = pallette[4]) +
+  geom_line(data = no_covid_forecast_3c, color = pallette[5]) +
+  geom_line(data = covid_forecast_3c, color = pallette[6]) +
+  geom_line(data = no_covid_forecast_3d, color = pallette[7]) +
+  geom_line(data = covid_forecast_3d, color = pallette[8]) +
+  labs(title="Melts and Freezes (95%-105%)") + xlab('Date') + ylab('Cost per unit Distance ($/mile)')
+ggsave("scenario_analysis_images/Friday/3_historical_summarized.png", width = 20, height = 15, units = "cm")
+
+
+# Diesel Spikes vs. Dips
+  # ahistorical
+ggplot(mapping = aes(x = yw, y = approx_cost)) +
+  geom_line(data = no_covid_forecast_0, color = "darkgray") +
+  geom_line(data = covid_forecast_0, color = "gray") +
+  geom_line(data = no_covid_forecast_4a, color = pallette[1]) +
+  geom_line(data = covid_forecast_4a, color = pallette[2]) +
+  geom_line(data = no_covid_forecast_4b, color = pallette[3]) +
+  geom_line(data = covid_forecast_4b, color = pallette[4]) +
+  geom_line(data = no_covid_forecast_4c, color = pallette[5]) +
+  geom_line(data = covid_forecast_4c, color = pallette[6]) +
+  geom_line(data = no_covid_forecast_4d, color = pallette[7]) +
+  geom_line(data = covid_forecast_4d, color = pallette[8]) +
+  labs(title="Diesel Spikes vs. Dips (60%-140%)") + xlab('Date') + ylab('Cost per unit Distance ($/mile)')
+ggsave("scenario_analysis_images/Friday/4_ahistorical_summarized.png", width = 20, height = 15, units = "cm")
+
+  # historical
+ggplot(mapping = aes(x = yw, y = approx_cost)) +
+  geom_line(data = train_ts, color = "black") +
+  geom_line(data = no_covid_forecast_0, color = "darkgray") +
+  geom_line(data = covid_forecast_0, color = "gray") +
+  geom_line(data = no_covid_forecast_4a, color = pallette[1]) +
+  geom_line(data = covid_forecast_4a, color = pallette[2]) +
+  geom_line(data = no_covid_forecast_4b, color = pallette[3]) +
+  geom_line(data = covid_forecast_4b, color = pallette[4]) +
+  geom_line(data = no_covid_forecast_4c, color = pallette[5]) +
+  geom_line(data = covid_forecast_4c, color = pallette[6]) +
+  geom_line(data = no_covid_forecast_4d, color = pallette[7]) +
+  geom_line(data = covid_forecast_4d, color = pallette[8]) +
+  labs(title="Diesel Spikes vs. Dips (60%-140%)") + xlab('Date') + ylab('Cost per unit Distance ($/mile)')
+ggsave("scenario_analysis_images/Friday/4_historical_summarized.png", width = 20, height = 15, units = "cm")
+
+
+# A particularly bad year
+  # ahistorical
+ggplot(mapping = aes(x = yw, y = approx_cost)) +
+  geom_line(data = no_covid_forecast_0, color = "darkgray") +
+  geom_line(data = covid_forecast_0, color = "gray") +
+  geom_line(data = no_covid_forecast_5, color = pallette[1]) +
+  geom_line(data = covid_forecast_5, color = pallette[2]) +
+  labs(title="A Particularly Bad Year: High Temps, Drought, Diesel Price Spike") + xlab('Date') + ylab('Cost per unit Distance ($/mile)')
+ggsave("scenario_analysis_images/Friday/5_ahistorical_summarized.png", width = 20, height = 15, units = "cm")
+
+  # historical
+ggplot(mapping = aes(x = yw, y = approx_cost)) +
+  geom_line(data = train_ts, color = "black") +
+  geom_line(data = no_covid_forecast_0, color = "darkgray") +
+  geom_line(data = covid_forecast_0, color = "gray") +
+  geom_line(data = no_covid_forecast_5, color = pallette[1]) +
+  geom_line(data = covid_forecast_5, color = pallette[2]) +
+  labs(title="A Particularly Bad Year: High Temps, Drought, Diesel Price Spike") + xlab('Date') + ylab('Cost per unit Distance ($/mile)')
+ggsave("scenario_analysis_images/Friday/5_historical_summarized.png", width = 20, height = 15, units = "cm")
+
+
+# Volume Flexes vs. Folds
+  # ahistorical
+ggplot(mapping = aes(x = yw, y = approx_cost)) +
+  geom_line(data = no_covid_forecast_0, color = "darkgray") +
+  geom_line(data = covid_forecast_0, color = "gray") +
+  geom_line(data = no_covid_forecast_6a, color = pallette[1]) +
+  geom_line(data = covid_forecast_6a, color = pallette[2]) +
+  geom_line(data = no_covid_forecast_6b, color = pallette[3]) +
+  geom_line(data = covid_forecast_6b, color = pallette[4]) +
+  geom_line(data = no_covid_forecast_6c, color = pallette[5]) +
+  geom_line(data = covid_forecast_6c, color = pallette[6]) +
+  geom_line(data = no_covid_forecast_6d, color = pallette[7]) +
+  geom_line(data = covid_forecast_6d, color = pallette[8]) +
+  labs(title="Volume Flexes vs. Folds (60%-140%)") + xlab('Date') + ylab('Cost per unit Distance ($/mile)')
+ggsave("scenario_analysis_images/Friday/6_ahistorical_summarized.png", width = 20, height = 15, units = "cm")
+
+  # historical
+ggplot(mapping = aes(x = yw, y = approx_cost)) +
+  geom_line(data = train_ts, color = "black") +
+  geom_line(data = no_covid_forecast_0, color = "darkgray") +
+  geom_line(data = covid_forecast_0, color = "gray") +
+  geom_line(data = no_covid_forecast_6a, color = pallette[1]) +
+  geom_line(data = covid_forecast_6a, color = pallette[2]) +
+  geom_line(data = no_covid_forecast_6b, color = pallette[3]) +
+  geom_line(data = covid_forecast_6b, color = pallette[4]) +
+  geom_line(data = no_covid_forecast_6c, color = pallette[5]) +
+  geom_line(data = covid_forecast_6c, color = pallette[6]) +
+  geom_line(data = no_covid_forecast_6d, color = pallette[7]) +
+  geom_line(data = covid_forecast_6d, color = pallette[8]) +
+  labs(title="Volume Flexes vs. Folds (60%-140%)") + xlab('Date') + ylab('Cost per unit Distance ($/mile)')
+ggsave("scenario_analysis_images/Friday/6_historical_summarized.png", width = 20, height = 15, units = "cm")
+
+
+# Everything on one chart....
+  # ahistorical
+ggplot(mapping = aes(x = yw, y = approx_cost)) +
+  geom_line(data = no_covid_forecast_0, color = "darkgray") +
+  geom_line(data = covid_forecast_0, color = "gray") +
+  geom_line(data = covid_forecast_1a, color = "black") +
+  geom_line(data = covid_forecast_1b, color = "black") +
+  geom_line(data = covid_forecast_1c, color = "black") +
+  geom_line(data = covid_forecast_1d, color = "black") +
+  
+  geom_line(data = no_covid_forecast_2a, color = "black") +
+  geom_line(data = covid_forecast_2a, color = "black") +
+  geom_line(data = no_covid_forecast_2b, color = "black") +
+  geom_line(data = covid_forecast_2b, color = "black") +
+  geom_line(data = no_covid_forecast_2c, color = "black") +
+  geom_line(data = covid_forecast_2c, color = "black") +
+  geom_line(data = no_covid_forecast_2d, color = "black") +
+  geom_line(data = covid_forecast_2d, color = "black") +
+  geom_line(data = no_covid_forecast_2e, color = "black") +
+  geom_line(data = covid_forecast_2e, color = "black") +
+  geom_line(data = no_covid_forecast_2f, color = "black") +
+  geom_line(data = covid_forecast_2f, color = "black") +
+  
+  geom_line(data = no_covid_forecast_3a, color = "black") +
+  geom_line(data = covid_forecast_3a, color = "black") +
+  geom_line(data = no_covid_forecast_3b, color = "black") +
+  geom_line(data = covid_forecast_3b, color = "black") +
+  geom_line(data = no_covid_forecast_3c, color = "black") +
+  geom_line(data = covid_forecast_3c, color = "black") +
+  geom_line(data = no_covid_forecast_3d, color = "black") +
+  geom_line(data = covid_forecast_3d, color = "black") +
+  
+  geom_line(data = no_covid_forecast_4a, color = "black") +
+  geom_line(data = covid_forecast_4a, color = "black") +
+  geom_line(data = no_covid_forecast_4b, color = "black") +
+  geom_line(data = covid_forecast_4b, color = "black") +
+  geom_line(data = no_covid_forecast_4c, color = "black") +
+  geom_line(data = covid_forecast_4c, color = "black") +
+  geom_line(data = no_covid_forecast_4d, color = "black") +
+  geom_line(data = covid_forecast_4d, color = "black") +
+  
+  geom_line(data = no_covid_forecast_5, color = "black") +
+  geom_line(data = covid_forecast_5, color = "black") +
+  labs(title="Range of Scenarios") + xlab('Date') + ylab('Cost per unit Distance ($/mile)')
+ggsave("scenario_analysis_images/Friday/all_ahistorical.png", width = 20, height = 15, units = "cm")
+
+    # historical
+  ggplot(mapping = aes(x = yw, y = approx_cost)) +
+  geom_line(data = train_ts, color = "black") +
+  geom_line(data = no_covid_forecast_0, color = "darkgray") +
+  geom_line(data = covid_forecast_0, color = "gray") +
+  geom_line(data = covid_forecast_1a, color = "black") +
+  geom_line(data = covid_forecast_1b, color = "black") +
+  geom_line(data = covid_forecast_1c, color = "black") +
+  geom_line(data = covid_forecast_1d, color = "black") +
+  
+  geom_line(data = no_covid_forecast_2a, color = "black") +
+  geom_line(data = covid_forecast_2a, color = "black") +
+  geom_line(data = no_covid_forecast_2b, color = "black") +
+  geom_line(data = covid_forecast_2b, color = "black") +
+  geom_line(data = no_covid_forecast_2c, color = "black") +
+  geom_line(data = covid_forecast_2c, color = "black") +
+  geom_line(data = no_covid_forecast_2d, color = "black") +
+  geom_line(data = covid_forecast_2d, color = "black") +
+  geom_line(data = no_covid_forecast_2e, color = "black") +
+  geom_line(data = covid_forecast_2e, color = "black") +
+  geom_line(data = no_covid_forecast_2f, color = "black") +
+  geom_line(data = covid_forecast_2f, color = "black") +
+  
+  geom_line(data = no_covid_forecast_3a, color = "black") +
+  geom_line(data = covid_forecast_3a, color = "black") +
+  geom_line(data = no_covid_forecast_3b, color = "black") +
+  geom_line(data = covid_forecast_3b, color = "black") +
+  geom_line(data = no_covid_forecast_3c, color = "black") +
+  geom_line(data = covid_forecast_3c, color = "black") +
+  geom_line(data = no_covid_forecast_3d, color = "black") +
+  geom_line(data = covid_forecast_3d, color = "black") +
+  
+  geom_line(data = no_covid_forecast_4a, color = "black") +
+  geom_line(data = covid_forecast_4a, color = "black") +
+  geom_line(data = no_covid_forecast_4b, color = "black") +
+  geom_line(data = covid_forecast_4b, color = "black") +
+  geom_line(data = no_covid_forecast_4c, color = "black") +
+  geom_line(data = covid_forecast_4c, color = "black") +
+  geom_line(data = no_covid_forecast_4d, color = "black") +
+  geom_line(data = covid_forecast_4d, color = "black") +
+  
+  geom_line(data = no_covid_forecast_5, color = "black") +
+  geom_line(data = covid_forecast_5, color = "black") +
+  labs(title="Range of Scenarios") + xlab('Date') + ylab('Cost per unit Distance ($/mile)')
+ggsave("scenario_analysis_images/Friday/all_historical.png", width = 20, height = 15, units = "cm")
+
+```
+
+
+# Just using our "best model"
+```{r}
+# Another pandemic, Varying Levels of Death.
+# Red = most pandemic.
+  # ahistorical
+ggplot(mapping = aes(x = yw, y = approx_cost)) +
+  geom_line(data = covid_forecast_0, color = "gray") +
+  geom_line(data = covid_forecast_1a, color = pallette[2]) +
+  geom_line(data = covid_forecast_1b, color = pallette[4]) +
+  geom_line(data = covid_forecast_1c, color = pallette[6]) +
+  geom_line(data = covid_forecast_1d, color = pallette[8]) +
+  labs(title="Another Pandemic, Varying Levels of Deaths (10%-100%)") + xlab('Date') + ylab('Cost per unit Distance ($/mile)')
+ggsave("scenario_analysis_images/Friday/1_ahistorical_summarized_just_model_2.png", width = 20, height = 15, units = "cm")
+
+  # historical
+ggplot(mapping = aes(x = yw, y = approx_cost)) +
+  geom_line(data = train_ts, color = "black") +
+  geom_line(data = covid_forecast_0, color = "gray") +
+  geom_line(data = covid_forecast_1a, color = pallette[2]) +
+  geom_line(data = covid_forecast_1b, color = pallette[4]) +
+  geom_line(data = covid_forecast_1c, color = pallette[6]) +
+  geom_line(data = covid_forecast_1d, color = pallette[8]) +
+  labs(title="Another Pandemic, Varying Levels of Deaths (10%-100%)") + xlab('Date') + ylab('Cost per unit Distance ($/mile)')
+ggsave("scenario_analysis_images/Friday/1_historical_summarized_just_model_2.png", width = 20, height = 15, units = "cm")
+
+
+# Droughts vs. Floods
+# Top = No Covid
+# Bottom = Covid
+  # ahistorical
+ggplot(mapping = aes(x = yw, y = approx_cost)) +
+  geom_line(data = covid_forecast_0, color = "gray") +
+  geom_line(data = covid_forecast_2a, color = pallette[2]) +
+  geom_line(data = covid_forecast_2b, color = pallette[4]) +
+  geom_line(data = covid_forecast_2c, color = pallette[6]) +
+  geom_line(data = covid_forecast_2d, color = pallette[8]) +
+  geom_line(data = covid_forecast_2e, color = pallette[10]) +
+  geom_line(data = covid_forecast_2f, color = pallette[12]) +
+  labs(title="Droughts and Floods (0%-125%)") + xlab('Date') + ylab('Cost per unit Distance ($/mile)')
+ggsave("scenario_analysis_images/Friday/2_ahistorical_summarized_just_model_2.png", width = 20, height = 15, units = "cm")
+
+  # historical
+ggplot(mapping = aes(x = yw, y = approx_cost)) +
+  geom_line(data = train_ts, color = "black") +
+  geom_line(data = covid_forecast_0, color = "gray") +
+  geom_line(data = covid_forecast_2a, color = pallette[2]) +
+  geom_line(data = covid_forecast_2b, color = pallette[4]) +
+  geom_line(data = covid_forecast_2c, color = pallette[6]) +
+  geom_line(data = covid_forecast_2d, color = pallette[8]) +
+  geom_line(data = covid_forecast_2e, color = pallette[10]) +
+  geom_line(data = covid_forecast_2f, color = pallette[12]) +
+  labs(title="Droughts and Floods (0%-125%)") + xlab('Date') + ylab('Cost per unit Distance ($/mile)')
+ggsave("scenario_analysis_images/Friday/2_historical_summarized_just_model_2.png", width = 20, height = 15, units = "cm")
+
+
+# Melts vs. Freezes
+  # ahistorical
+ggplot(mapping = aes(x = yw, y = approx_cost)) +
+  geom_line(data = covid_forecast_0, color = "gray") +
+  geom_line(data = covid_forecast_3a, color = pallette[2]) +
+  geom_line(data = covid_forecast_3b, color = pallette[4]) +
+  geom_line(data = covid_forecast_3c, color = pallette[6]) +
+  geom_line(data = covid_forecast_3d, color = pallette[8]) +
+  labs(title="Melts and Freezes (95%-105%)") + xlab('Date') + ylab('Cost per unit Distance ($/mile)')
+ggsave("scenario_analysis_images/Friday/3_ahistorical_summarized_just_model_2.png", width = 20, height = 15, units = "cm")
+
+  # historical
+ggplot(mapping = aes(x = yw, y = approx_cost)) +
+  geom_line(data = train_ts, color = "black") +
+  geom_line(data = covid_forecast_0, color = "gray") +
+  geom_line(data = covid_forecast_3a, color = pallette[2]) +
+  geom_line(data = covid_forecast_3b, color = pallette[4]) +
+  geom_line(data = covid_forecast_3c, color = pallette[6]) +
+  geom_line(data = covid_forecast_3d, color = pallette[8]) +
+  labs(title="Melts and Freezes (95%-105%)") + xlab('Date') + ylab('Cost per unit Distance ($/mile)')
+ggsave("scenario_analysis_images/Friday/3_historical_summarized_just_model_2.png", width = 20, height = 15, units = "cm")
+
+
+# Diesel Spikes vs. Dips
+  # ahistorical
+ggplot(mapping = aes(x = yw, y = approx_cost)) +
+  geom_line(data = covid_forecast_0, color = "gray") +
+  geom_line(data = covid_forecast_4a, color = pallette[2]) +
+  geom_line(data = covid_forecast_4b, color = pallette[4]) +
+  geom_line(data = covid_forecast_4c, color = pallette[6]) +
+  geom_line(data = covid_forecast_4d, color = pallette[8]) +
+  labs(title="Diesel Spikes vs. Dips (60%-140%)") + xlab('Date') + ylab('Cost per unit Distance ($/mile)')
+ggsave("scenario_analysis_images/Friday/4_ahistorical_summarized_just_model_2.png", width = 20, height = 15, units = "cm")
+
+  # historical
+ggplot(mapping = aes(x = yw, y = approx_cost)) +
+  geom_line(data = train_ts, color = "black") +
+  geom_line(data = covid_forecast_0, color = "gray") +
+  geom_line(data = covid_forecast_4a, color = pallette[2]) +
+  geom_line(data = covid_forecast_4b, color = pallette[4]) +
+  geom_line(data = covid_forecast_4c, color = pallette[6]) +
+  geom_line(data = covid_forecast_4d, color = pallette[8]) +
+  labs(title="Diesel Spikes vs. Dips (60%-140%)") + xlab('Date') + ylab('Cost per unit Distance ($/mile)')
+ggsave("scenario_analysis_images/Friday/4_historical_summarized_just_model_2.png", width = 20, height = 15, units = "cm")
+
+
+# A particularly bad year
+  # ahistorical
+ggplot(mapping = aes(x = yw, y = approx_cost)) +
+  geom_line(data = covid_forecast_0, color = "gray") +
+  geom_line(data = covid_forecast_5, color = pallette[2]) +
+  labs(title="A Particularly Bad Year: High Temps, Drought, Diesel Price Spike") + xlab('Date') + ylab('Cost per unit Distance ($/mile)')
+ggsave("scenario_analysis_images/Friday/5_ahistorical_summarized_just_model_2.png", width = 20, height = 15, units = "cm")
+
+  # historical
+ggplot(mapping = aes(x = yw, y = approx_cost)) +
+  geom_line(data = train_ts, color = "black") +
+  geom_line(data = covid_forecast_0, color = "gray") +
+  geom_line(data = covid_forecast_5, color = pallette[2]) +
+  labs(title="A Particularly Bad Year: High Temps, Drought, Diesel Price Spike") + xlab('Date') + ylab('Cost per unit Distance ($/mile)')
+ggsave("scenario_analysis_images/Friday/5_historical_summarized_just_model_2.png", width = 20, height = 15, units = "cm")
+
+
+# Volume Flexes vs. Folds
+  # ahistorical
+ggplot(mapping = aes(x = yw, y = approx_cost)) +
+  geom_line(data = covid_forecast_0, color = "gray") +
+  geom_line(data = covid_forecast_6a, color = pallette[2]) +
+  geom_line(data = covid_forecast_6b, color = pallette[4]) +
+  geom_line(data = covid_forecast_6c, color = pallette[6]) +
+  geom_line(data = covid_forecast_6d, color = pallette[8]) +
+  labs(title="Volume Flexes vs. Folds (60%-140%)") + xlab('Date') + ylab('Cost per unit Distance ($/mile)')
+ggsave("scenario_analysis_images/Friday/6_ahistorical_summarized_just_model_2.png", width = 20, height = 15, units = "cm")
+
+  # historical
+ggplot(mapping = aes(x = yw, y = approx_cost)) +
+  geom_line(data = train_ts, color = "black") +
+  geom_line(data = covid_forecast_0, color = "gray") +
+  geom_line(data = covid_forecast_6a, color = pallette[2]) +
+  geom_line(data = covid_forecast_6b, color = pallette[4]) +
+  geom_line(data = covid_forecast_6c, color = pallette[6]) +
+  geom_line(data = covid_forecast_6d, color = pallette[8]) +
+  labs(title="Volume Flexes vs. Folds (60%-140%)") + xlab('Date') + ylab('Cost per unit Distance ($/mile)')
+ggsave("scenario_analysis_images/Friday/6_historical_summarized_just_model_2.png", width = 20, height = 15, units = "cm")
+
+
+# Everything on one chart....
+  # ahistorical
+ggplot(mapping = aes(x = yw, y = approx_cost)) +
+  geom_line(data = covid_forecast_0, color = "gray") +
+  geom_line(data = covid_forecast_1a, color = "black") +
+  geom_line(data = covid_forecast_1b, color = "black") +
+  geom_line(data = covid_forecast_1c, color = "black") +
+  geom_line(data = covid_forecast_1d, color = "black") +
+  
+  geom_line(data = covid_forecast_2a, color = pallette[2]) +
+  geom_line(data = covid_forecast_2b, color = pallette[4]) +
+  geom_line(data = covid_forecast_2c, color = pallette[6]) +
+  geom_line(data = covid_forecast_2d, color = pallette[8]) +
+  geom_line(data = covid_forecast_2e, color = pallette[10]) +
+  geom_line(data = covid_forecast_2f, color = pallette[12]) +
+  
+  geom_line(data = covid_forecast_3a, color = "black") +
+  geom_line(data = covid_forecast_3b, color = "black") +
+  geom_line(data = covid_forecast_3c, color = "black") +
+  geom_line(data = covid_forecast_3d, color = "black") +
+  
+  geom_line(data = covid_forecast_4a, color = "black") +
+  geom_line(data = covid_forecast_4b, color = "black") +
+  geom_line(data = covid_forecast_4c, color = "black") +
+  geom_line(data = covid_forecast_4d, color = "black") +
+  
+  geom_line(data = covid_forecast_5, color = "black") +
+  labs(title="Range of Scenarios") + xlab('Date') + ylab('Cost per unit Distance ($/mile)')
+ggsave("scenario_analysis_images/Friday/all_ahistorical_just_model_2.png", width = 20, height = 15, units = "cm")
+
+    # historical
+  ggplot(mapping = aes(x = yw, y = approx_cost)) +
+  geom_line(data = train_ts, color = "black") +
+  geom_line(data = covid_forecast_0, color = "gray") +
+  geom_line(data = covid_forecast_1a, color = "black") +
+  geom_line(data = covid_forecast_1b, color = "black") +
+  geom_line(data = covid_forecast_1c, color = "black") +
+  geom_line(data = covid_forecast_1d, color = "black") +
+  
+  geom_line(data = covid_forecast_2a, color = pallette[2]) +
+  geom_line(data = covid_forecast_2b, color = pallette[4]) +
+  geom_line(data = covid_forecast_2c, color = pallette[6]) +
+  geom_line(data = covid_forecast_2d, color = pallette[8]) +
+  geom_line(data = covid_forecast_2e, color = pallette[10]) +
+  geom_line(data = covid_forecast_2f, color = pallette[12]) +
+  
+  geom_line(data = covid_forecast_3a, color = "black") +
+  geom_line(data = covid_forecast_3b, color = "black") +
+  geom_line(data = covid_forecast_3c, color = "black") +
+  geom_line(data = covid_forecast_3d, color = "black") +
+  
+  geom_line(data = covid_forecast_4a, color = "black") +
+  geom_line(data = covid_forecast_4b, color = "black") +
+  geom_line(data = covid_forecast_4c, color = "black") +
+  geom_line(data = covid_forecast_4d, color = "black") +
+  
+  geom_line(data = covid_forecast_5, color = "black") +
+  labs(title="Range of Scenarios") + xlab('Date') + ylab('Cost per unit Distance ($/mile)')
+ggsave("scenario_analysis_images/Friday/all_historical_just_model_2.png", width = 20, height = 15, units = "cm")
+
+```
+  
+
+```

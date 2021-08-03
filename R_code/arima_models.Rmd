@@ -1,0 +1,115 @@
+---
+output:
+  pdf_document: default
+  html_document: default
+---
+#ARIMA/SARIMA
+# This file runs some basic ARIMA models on each of the lanes.
+
+```{r, warning = FALSE, message = FALSE}
+library(plyr)
+library(fpp3)
+library(tsibble)
+library(forecast)
+library(zoo)
+```
+
+```{r, warning = FALSE, message = FALSE}
+# Import the interpolated data with diesel
+data <- readr::read_csv(file = 'data/data_interpolated_with_diesel.csv') %>%
+  dplyr::select(-X1) 
+
+# have yet to mutate yw to yearweek type, nor have I made it into a tsibble object yet
+```
+
+```{r}
+#make into univariate approx_cost series
+#data <- data %>%
+#  select(Mode, ORegionDAT, DRegionDAT, yw, approx_cost)
+
+# Only take the necessary columns
+data <- data %>%
+  dplyr::select(Mode, ORegionDAT, DRegionDAT, tmax, prcp, diesel_price, yw, approx_cost)
+```
+
+```{r}
+#trim leading and trailing na's
+data <- drop_na(data)
+```
+
+```{r}
+# Produce a training set
+train <- data %>%
+  dplyr::filter(yw <= "2018 W53") %>%
+  mutate(yw = yearweek(yw)) %>%
+  as_tsibble(key = c(Mode, ORegionDAT, DRegionDAT), index = yw)
+
+# Make the data portion a tsibble now
+data <- data %>%
+  mutate(yw = yearweek(yw)) %>%
+  as_tsibble(key = c(Mode, ORegionDAT, DRegionDAT), index = yw)
+```
+
+There are many possible arima models - based on choice of hyperparameters and whether to include seasonality or not. The ARIMA() function automatically chooses the best hyperparameters.
+```{r}
+fit <- train %>%
+  model(ARIMA(approx_cost))
+```
+```{r}
+#see what the automatically chosen arima models were.
+report(fit %>% filter (Mode=="R", DRegionDAT=="IL_CHI"))
+report(fit %>% filter (Mode=="V", DRegionDAT=="IL_CHI"))
+report(fit %>% filter (Mode=="R", DRegionDAT=="MA_BOS"))
+report(fit %>% filter (Mode=="V", DRegionDAT=="MA_BOS"))
+```
+It looks like for the first 3 time series ARIMA() automatically picked up on the period 52 seasonality. For Boston V data, it did not. Also it chose a different set of hyperparameters for each time series. 
+
+```{r}
+#forecast
+fc <- fit %>% forecast(h = 26)
+```
+
+```{r fig.height = 6, fig.width = 10}
+#plot
+fc %>%
+  autoplot(train) +
+  autolayer(data, approx_cost, colour = "black") +
+  labs(title="SARIMA")
+```
+
+#Looking at fitted values and residuals
+
+```{r}
+#get fitted values and residuals
+aug = augment(fit)
+```
+
+```{r fig.height = 3, fig.width = 8}
+#autoplot them
+autoplot(aug, .innov) +
+  labs(title = "Residuals from the ARIMA/SARIMA model")
+```
+
+```{r}
+#histograms
+aug %>%
+  ggplot(aes(x = .innov)) +
+  geom_histogram() +
+  facet_grid(rows = vars(Mode), cols = vars(DRegionDAT)) +
+  labs(title = "Histograms of residuals")
+```
+
+```{r}
+#acf
+aug %>%
+  ACF(.innov, lag_max = Inf) %>%
+  autoplot() +
+  facet_grid(rows = vars(Mode), cols = vars(DRegionDAT)) +
+  labs(title = "ACF of Residuals")
+```
+
+## Looking at forecast errors
+
+```{r}
+accuracy(fc, data)
+```

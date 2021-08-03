@@ -1,0 +1,206 @@
+Clustering of weather in Monterey
+
+```{r message = FALSE, warning = FALSE}
+# Load packages
+library(fpp3)
+library(tsibble)
+library(plyr)
+library(dplyr)
+library(tidyverse)
+library(ggplot2)
+```
+
+```{r, warning = FALSE, message = FALSE}
+# Import weather data
+weather <- readr::read_csv(file = 'data/Monterey_weather_lags.csv') %>%
+  dplyr::select(-X1) %>%
+  mutate(yw = yearweek(yw)) %>%
+  relocate(yw) %>%
+  as_tsibble(index = yw)
+```
+
+Get data into right format for clustering
+```{r}
+weather1 <- weather %>%
+  as.data.frame() %>%
+  dplyr::select(yw, tmax, prcp_lag4, tmax_lag4) %>% # lagging by 4 per Grace's suggestion
+  drop_na()
+
+row.names(weather1) <- as.character(weather1$yw)
+weather1 <- weather1 %>% dplyr::select(-yw)
+```
+
+Interactive visualizations to play around with to see how the prices of different lettuce types relate to each other.
+
+```{r}
+library(plotly) 
+```
+
+```{r}
+weather1_plot <- weather1 %>% mutate(yw = row.names(weather1))
+
+weather1_plot
+
+p <- ggplot(weather1_plot, aes(x=log(tmax), y=log(prcp_lag4), 
+                       color = format(as.Date(yearweek(yw)),format = "%Y"), 
+                       text=yw)) +
+  geom_point(alpha=0.75)
+
+ggplotly(p, tooltip="yw")
+```
+
+library for PCA and clustering visualizations to come.
+```{r}
+library(factoextra)
+```
+
+We can make a cool 3D interactive plot for the three weather variables being used.
+```{r}
+library(rgl)
+# 3D plot (window pops out)
+plot3d(weather1$tmax, weather1$prcp_lag4, weather1$tmax_lag4)
+```
+
+# K-Means clustering
+```{r}
+comps <- weather1
+
+# Determine number of clusters
+wss <- (nrow(comps)-1)*sum(apply(comps,2,var))
+for (i in 2:8) wss[i] <- sum(kmeans(comps, 
+                                     nstart = 25, 
+                                     iter.max=1000,
+                                     centers=i)$withinss)
+plot(1:8, wss, type="b", xlab="Number of Clusters",
+     ylab="Within groups sum of squares")
+```
+I don't see an obvious elbow bend in the plot (same thing that happened with Grace's clustering after performing PCA on lettuce data), so it's not clear to me how many clusters to do. I'll try a few possibilities. 
+
+For $k$ clusters, we can perform the same set of steps:
+
+```{r}
+# Perform the clustering
+cluster_k <- function(k) {
+  
+  # set seed for reproducibility
+  set.seed(123) 
+  
+  # do the clustering
+  clusterk <- kmeans(comps, k, nstart = 25, iter.max=1000)
+  
+  # 3D plot
+  plot3d(comps$tmax, comps$prcp_lag4, comps$tmax_lag4, col=clusterk$clust)
+  
+  # print sizes of the clusters
+  print(sort(table(clusterk$clust)))
+  
+  return(clusterk)
+}
+
+# Convert to data.frame
+df_the_cluster <- function(data, clustering, k) {
+  
+  # sort names
+  clust <- names(sort(table(clustering$clust)))
+
+  # allocate list of size k to be filled with each cluster's data.frame
+  clusters_df = vector("list", k)
+  
+  # loop over each cluster
+  for(i in 1:k) {
+    cluster = row.names(data[clustering$clust==clust[i],])
+    
+    # turn the cluster into a data.frame to be labeled
+    clusters_df[[i]] <- data.frame(cluster) %>%
+      rename(yw = cluster) %>%
+      mutate(yw = yearweek(yw)) %>%
+      mutate(cluster = i)
+  }
+  
+  # initialize full data.frame
+  cluster_df = clusters_df[[1]]
+  
+  # join the rest of the data.frames
+  for(i in 2:k) {
+    cluster_df = join(cluster_df, clusters_df[[i]], type = "full", by = c("yw", "cluster"))
+  }
+  
+  # clean up, make tsibble
+  cluster_df <- cluster_df %>%
+    mutate(cluster = as.character(cluster)) %>%
+    as_tsibble(index = yw)
+  
+  return(cluster_df)
+}
+
+# Produce the plot
+picture <- function(cluster_df) {
+  
+  # plot the clusters all together over time
+  ggplot(cluster_df, aes(x=yw, y=0, color = cluster)) + geom_point()
+}
+```
+
+First, I'll do 2 clusters.
+
+```{r}
+k = 2
+clustering2 <- cluster_k(k)
+clustering2_df <- df_the_cluster(weather1, clustering2, k)
+picture(clustering2_df)
+```
+
+Next, let's try 3 clusters.
+
+```{r}
+k = 3
+clustering3 <- cluster_k(k)
+clustering3_df <- df_the_cluster(weather1, clustering3, k)
+picture(clustering3_df)
+```
+
+Next, let's try 4-10 clusters.
+
+```{r}
+k = 4
+clustering4 <- cluster_k(k)
+clustering4_df <- df_the_cluster(weather1, clustering4, k)
+picture(clustering4_df)
+
+k = 5
+clustering5 <- cluster_k(k)
+clustering5_df <- df_the_cluster(weather1, clustering5, k)
+picture(clustering5_df)
+
+k = 6
+clustering6 <- cluster_k(k)
+clustering6_df <- df_the_cluster(weather1, clustering6, k)
+picture(clustering6_df)
+
+k = 7
+clustering7 <- cluster_k(k)
+clustering7_df <- df_the_cluster(weather1, clustering7, k)
+picture(clustering7_df)
+```
+Let's try doing a clustering of $k = 6$. 
+
+```{r}
+clustering_choice = clustering6_df
+
+new_weather <- weather %>% 
+  drop_na() %>%
+  mutate(cluster1 = ifelse(yw %in% (clustering_choice %>% as_tibble() %>% filter(cluster == 1) %>% pull(yw)), 1, 0)) %>%
+  mutate(cluster2 = ifelse(yw %in% (clustering_choice %>% as_tibble() %>% filter(cluster == 2) %>% pull(yw)), 1, 0)) %>%
+  mutate(cluster3 = ifelse(yw %in% (clustering_choice %>% as_tibble() %>% filter(cluster == 3) %>% pull(yw)), 1, 0)) %>%
+  mutate(cluster4 = ifelse(yw %in% (clustering_choice %>% as_tibble() %>% filter(cluster == 4) %>% pull(yw)), 1, 0)) %>%
+  mutate(cluster5 = ifelse(yw %in% (clustering_choice %>% as_tibble() %>% filter(cluster == 5) %>% pull(yw)), 1, 0)) %>%
+  mutate(cluster6 = ifelse(yw %in% (clustering_choice %>% as_tibble() %>% filter(cluster == 6) %>% pull(yw)), 1, 0))
+
+new_weather
+
+new_weather %>% write.csv("data/weather_clustered.csv")
+```
+
+
+
+

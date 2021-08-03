@@ -1,0 +1,405 @@
+---
+output:
+  pdf_document: default
+  html_document: default
+---
+# Data Cleaning
+
+```{r message = FALSE, warning = FALSE}
+# Load packages
+library(tidyverse)
+library(plyr)
+library(dplyr)
+library(tsibble)
+library(ggplot2)
+library(feasts)
+library(lubridate)
+library(janitor)
+```
+
+```{r}
+# read shipping cost time series data
+data_raw <- readr::read_csv(file = 'data/FRS_OB_data_sanitized.csv') %>%
+  arrange(yearweek)
+
+head(data_raw)
+```
+```{r}
+#all shipments originate from Fresno, and they go to one of two destinations, Chicago or Boston.
+unique(data_raw$ORegionDAT)
+unique(data_raw$DRegionDAT)
+```
+
+
+## Converting date format for yearweek column
+
+```{r}
+#define function for converting format of yearweek column
+#the input chr should be in a form like "2019-02" meaning the second week of 2019. The output would be "2019 W02"
+
+convert_yearweek <- function(chr){ 
+  split = str_split(chr, "-")
+  year = split[[1]][1]
+  week = split[[1]][2]
+  output = paste(year," W",week)
+  return(output)
+}
+
+#test case
+test_chr = convert_yearweek("2020-02")
+yearweek(test_chr) #the function yearweek() converts the output string from the user defined function to a tsibble yearweek datatype.
+```
+
+```{r}
+#convert datatype of yearweek column to tsibble yearweek
+data_yw_modified <- data_raw %>%
+  mutate(yw = yearweek) %>%
+  mutate(yw = yearweek(modify(yw, convert_yearweek))) %>%
+  select(-yearweek)
+
+head(data_yw_modified)
+```
+
+## Handle Duplicate Data in Time Series
+
+```{r}
+#check if there is any duplicate data (i.e. same origin, destination, and yearweek, but different shipping cost)
+duplicates(data_yw_modified, key = c(Mode,DRegionDAT), index = yw) %>%
+  arrange(Mode)
+```
+
+It looks like there are 5 duplicate measurements (i.e. same origin, destination, and yearweek, but different shipping cost). What should we do? None of the duplicate measurement pairs are too different from each other, so let's just combine pairs of rows into one by taking the average cost of the two rows.
+
+```{r}
+#aggregate the duplicates by averaging cost
+data_remove_duplicates = ddply(data_yw_modified, .(Mode,ORegionDAT,DRegionDAT,yw), numcolwise(mean))
+```
+Now there are no more duplicates remaining.
+```{r}
+anyDuplicated(select(data_remove_duplicates, -yw))
+```
+
+## Convert from a tibble to a tsibble
+
+```{r}
+#convert data from a tibble to a tsibble
+data_ts <- data_remove_duplicates %>%
+  as_tsibble(key = c(Mode,ORegionDAT, DRegionDAT), index = yw)
+
+head(data_ts)
+```
+```{r}
+#plot
+autoplot(data_ts, sanitized_cost)
+```
+The purple data (vans going to Boston) has a lot of gaps. Let's fill in the gaps with NA in our data frame.
+
+```{r}
+data_ts_filled = fill_gaps(data_ts, .full= TRUE)
+
+#plot again
+autoplot(data_ts_filled, sanitized_cost)
+```
+```{r}
+  # Seasonal plot. For each combination of keys, plot every year on the same plot from Jan to Dec
+  gg_season(data_ts_filled, sanitized_cost) +
+  labs(title = "Seasonal plot by year")
+```
+```{r}
+# Loading the weather data, specifying the data types being imported.
+
+weather_raw <- read_csv(file = 'data/Fresno_weather_retrieved_Jul_11_2021.csv', 
+  col_types = cols(
+    STATION = col_character(),
+    NAME = col_character(),
+    DATE = col_character(),
+    DAPR = col_double(),
+    MDPR = col_double(),
+    PRCP = col_double(),
+    SNOW = col_double(),
+    SNWD = col_double(),
+    TAVG = col_integer(),
+    TMAX = col_integer(),
+    TMIN = col_integer(),
+    TOBS = col_integer()
+    )
+  ) %>%
+  clean_names()
+
+dim(weather_raw)
+
+head(weather_raw)
+```
+
+* dapr is number of days included in the mdpr
+* mdpr is the multiday precipitation total
+* prcp is precipitation (inches, 24 hour amount ending at observation time)
+* snow is snowfall
+* snwd is snow depth
+* tavg is average air temperature
+* tmax is maximum air temperature
+* tmin is minimum air temperature
+* tobs is air temperature at time of observation
+
+## yearweek date format
+
+Let's convert the date information to a yearweek format.
+```{r}
+#convert date to yearweek and add a column for yearweek, using the date column formatted as %m/%d/%y
+weather_yw <- weather_raw %>%
+  mutate(date = as.Date(date, format="%m/%d/%y")) %>%
+  mutate(yw = yearweek(date))
+  
+head(weather_yw)
+```
+
+## Drop Snow data
+```{r}
+unique(weather_raw$snwd)
+unique(weather_raw$snow)
+```
+There is no snow. We just drop those columns. 
+
+```{r}
+weather_yw <- weather_yw %>%
+  select(-snow, -snwd)
+
+weather_yw
+```
+
+
+## Clean up temperature data
+
+First, here are all the station names:
+```{r}
+unique(weather_raw$name)
+```
+Here we count the number of rows containing at least one bit of temperature data
+```{r}
+nrow(filter(weather_yw, !is.na(tavg) | !is.na(tmax) | !is.na(tmin) | !is.na(tobs)))
+```
+Not a lot of stations report temperature data. In total there are 3832 rows that have some kind of temperature data.
+
+```{r}
+nrow(filter(weather_yw, !is.na(tavg)))
+nrow(filter(weather_yw, name == "FRESNO YOSEMITE INTERNATIONAL, CA US" & !is.na(tavg)))
+nrow(filter(weather_yw, name == "FRESNO YOSEMITE INTERNATIONAL, CA US" & is.na(tavg)))
+```
+Fresno Yosemite reported complete tavg data. They reported tavg every day, and were the only station to report tavg. 
+
+```{r}
+nrow(filter(weather_yw, name == "FRESNO YOSEMITE INTERNATIONAL, CA US" & (is.na(tmax) | is.na(tmin))))
+```
+Fresno Yosemite also reported almost complete tmax and tmin data, except for on 2 days.
+
+```{r}
+nrow(filter(weather_yw, !is.na(tobs)))
+nrow(filter(weather_yw, name == "FRESNO 5 NE, CA US" & !is.na(tobs)))
+nrow(filter(weather_yw, name == "FRESNO 5 NE, CA US" & is.na(tobs)))
+```
+Fresno 5 NE was the only station to report tobs data, and only missed reporting tobs on 7 days. Can we impute the missing days using tmax and tmin?
+```{r}
+nrow(filter(weather_yw, name == "FRESNO 5 NE, CA US" & is.na(tobs) & (!is.na(tmax) | !is.na(tmin))))
+```
+Only 2 of those missing 7 days has tmax or tmin data reported, so that method isn't going to work great for imputing.
+
+```{r}
+2016 + 1814 + 2
+```
+Thee 2016 tavg reports from Fresno Yosemite, the 1814 tobs reports from Fresno 5 NE, and the 2 reports from Fresno 5 that are missing tobs but have at least one of tmax or tmin, account for all the temperature data present in the data set.
+
+Let's plot the data to see how it looks.
+```{r}
+tavg_yosemite = weather_yw %>%
+  filter(name == "FRESNO YOSEMITE INTERNATIONAL, CA US") %>%
+  select(date, tavg, tmax, tmin)
+
+tobs_fresno5ne = weather_yw %>%
+  filter(name == "FRESNO 5 NE, CA US") %>%
+  select(date, tobs, tmax, tmin)
+
+ggplot() + 
+  geom_line(data = tavg_yosemite, aes(x = date, y = tavg), color = "black") +
+  geom_line(data = tavg_yosemite, aes(x = date, y = tmax), color = "red") +
+  geom_line(data = tavg_yosemite, aes(x = date, y = tmin), color = "blue") +
+  labs(title = "Yosemite")
+
+ggplot() + 
+  geom_line(data = tobs_fresno5ne, aes(x = date, y = tobs), color = "black") +
+  geom_line(data = tobs_fresno5ne, aes(x = date, y = tmax), color = "red") +
+  geom_line(data = tobs_fresno5ne, aes(x = date, y = tmin), color = "blue") + 
+  labs(title = "Fresno 5 NE")
+```
+It seems like Fresno 5 NE's observations are typically taken during the cooler part of the day, but once in a while are taken during very hot parts of the day. 
+
+The max and min temperatures between the two stations are generally very similar. It seems like maybe there is a measurement error at Fresno 5 NE in the summer of 2019, when they suddenly register a freezing minimum temperature?
+
+Overall, the Yosemite data looks most reliable and consistent. Perhaps we should only use the Yosemite temperature data and forget about that from Fresno 5 NE, except we'll fill in the 2 days of Yosemite's missing tmax and tmin using Fresno's values of tmax and tmin from that day.
+
+```{r}
+weather_temp_cleaned = weather_yw %>%
+  select(-tobs)
+
+for (i in 1:nrow(weather_temp_cleaned)) {
+  
+  row = weather_temp_cleaned[i, ]
+  
+  if (row$name == "FRESNO YOSEMITE INTERNATIONAL, CA US" & is.na(row$tmin)) {
+    substitute = filter(weather_temp_cleaned, name == "FRESNO 5 NE, CA US", date == row$date)
+    row$tmin = substitute$tmin
+    row$tmax = substitute$tmax
+    weather_temp_cleaned[i, ] = row
+  }
+}
+
+  
+for (i in 1:nrow(weather_temp_cleaned)) {
+  
+  row = weather_temp_cleaned[i, ]
+  
+  if (row$name == "FRESNO 5 NE, CA US") {
+    row$tmax = NA
+    row$tmin = NA
+    weather_temp_cleaned[i, ] = row
+  }
+}
+```
+
+```{r}
+tavg_yosemite_cleaned = weather_temp_cleaned %>%
+  filter(name == "FRESNO YOSEMITE INTERNATIONAL, CA US") %>%
+  select(date, tavg, tmax, tmin)
+
+ggplot() + 
+  geom_line(data = tavg_yosemite_cleaned, aes(x = date, y = tavg), color = "black") +
+  geom_line(data = tavg_yosemite_cleaned, aes(x = date, y = tmax), color = "red") +
+  geom_line(data = tavg_yosemite_cleaned, aes(x = date, y = tmin), color = "blue") +
+  labs(title = "Yosemite")
+```
+Looking at a plot of the modified data confirms we did not adopt any of the weird looking temperatures from Fresno 5 NE in order to fill the missing Fresno Yosemite temperatures.
+
+
+## Clean up precipitation data
+
+```{r}
+nrow(filter(weather_raw, !is.na(dapr)))
+nrow(filter(weather_raw, !is.na(mdpr)))
+nrow(filter(weather_raw, !is.na(mdpr) & !is.na(mdpr)))
+```
+There isn't that much multiday precipitation data (29 rows out of 14457).
+
+```{r}
+nrow(filter(weather_raw, !is.na(dapr) & is.na(prcp)))
+```
+Most of the multiday precipitation data is reported on days where the precipitation data is missing. We could probably use the mdpr to impute missing values of prcp. But also, if you look at the data frame, there's only at most one station missing its prcp data on any given day. So we could also just forget about the multiday data, and construct an aggregate precipitation based on averaging all stations which report precipitation each day.
+
+
+```{r}
+unique(weather_temp_cleaned$station)
+
+weather_test_plot <- weather_temp_cleaned %>%
+  select(-dapr, -mdpr) %>%
+  drop_na(prcp) %>%
+  as_tsibble(key = c(station),
+             index = date)
+
+ggplot(weather_test_plot, aes(x=date, y = prcp, color = station))+
+  geom_point(alpha=0.5)
+
+```
+Looking at this plot (and playing around with removing some layers) shows that the precipitation measurements across different stations are more or less consistent with each other. So I think that averaging prcp across all stations is a reasonable thing to do.
+
+Here is averaging per day.
+```{r}
+prcp_aggregate_daily <- weather_temp_cleaned %>%
+  ddply(.(date), numcolwise(mean, na.rm=TRUE)) %>%
+  select(-dapr, -mdpr) %>%
+  as_tsibble(index = date)
+
+head(prcp_aggregate_daily)
+```
+
+And here is averaging per week (note this also averages temperature per week)
+```{r}
+prcp_aggregate_weekly <- weather_temp_cleaned %>%
+  ddply(.(yw), numcolwise(mean, na.rm=TRUE)) %>%
+  select(-dapr, -mdpr) %>%
+  as_tsibble(index = yw)
+
+head(prcp_aggregate_weekly)
+```
+
+Some plots
+
+```{r}
+autoplot(prcp_aggregate_daily, prcp) + labs(title="daily averaged precipitation")
+
+autoplot(prcp_aggregate_weekly, prcp) + labs(title="weekly averaged precipitation")
+
+autoplot(prcp_aggregate_weekly, tavg) + labs(title="weekly averaged tavg")
+
+```
+
+```{r}
+# Seasonal charts for daily and weekly aggregated precipitation
+gg_season(prcp_aggregate_daily, prcp) +
+  labs(title = "Seasonal daily aggregate precipitation")
+
+gg_season(prcp_aggregate_weekly, prcp) +
+  labs(title = "Seasonal weekly aggregate precipitation")
+```
+
+
+# Join the weekly weather and shipping data into one data set
+
+```{r}
+data_all = join(data_ts_filled, prcp_aggregate_weekly, by = "yw", type = "left", match = "all") %>%
+  as_tsibble(key = c(Mode, DRegionDAT),
+             index = yw)
+
+head(data_all)
+```
+
+I want to plot the `cost`, `precip`, and `temp` data all together to see if I notice any visual patterns. I'll normalize all the values first so that the plot looks alright
+
+Normalize
+```{r}
+scaled_data <- data_all %>% 
+  mutate_at(c("sanitized_cost", "prcp", "tavg", "tmax", "tmin"), ~(scale(.) %>% as.vector))
+
+head(scaled_data)
+```
+
+Plot normalized shipping cost (green), precip (blue), and tavg (black) for each combination of mode/destination.
+
+```{r}
+ggplot() + 
+  geom_line(data = filter(scaled_data, DRegionDAT=="IL_CHI" & Mode == "R"), aes(x = yw, y = tavg), color = "black") +
+  geom_line(data = filter(scaled_data, DRegionDAT=="IL_CHI" & Mode == "R"), aes(x = yw, y = prcp), color = "blue") +
+  geom_line(data = filter(scaled_data, DRegionDAT=="IL_CHI" & Mode == "R"), aes(x = yw, y = sanitized_cost), color = "green") +
+  labs(title = "Chicago Refrigerated", y= "normalized value")
+
+ggplot() + 
+  geom_line(data = filter(scaled_data, DRegionDAT=="MA_BOS" & Mode == "R"), aes(x = yw, y = tavg), color = "black") +
+  geom_line(data = filter(scaled_data, DRegionDAT=="MA_BOS" & Mode == "R"), aes(x = yw, y = prcp), color = "blue") +
+  geom_line(data = filter(scaled_data, DRegionDAT=="MA_BOS" & Mode == "R"), aes(x = yw, y = sanitized_cost), color = "green") +
+  labs(title = "Boston Refrigerated", y= "normalized value")
+
+ggplot() + 
+  geom_line(data = filter(scaled_data, DRegionDAT=="IL_CHI" & Mode == "V"), aes(x = yw, y = tavg), color = "black") +
+  geom_line(data = filter(scaled_data, DRegionDAT=="IL_CHI" & Mode == "V"), aes(x = yw, y = prcp), color = "blue") +
+  geom_line(data = filter(scaled_data, DRegionDAT=="IL_CHI" & Mode == "V"), aes(x = yw, y = sanitized_cost), color = "green") +
+  labs(title = "Chicago Van", y= "normalized value")
+
+ggplot() + 
+  geom_line(data = filter(scaled_data, DRegionDAT=="MA_BOS" & Mode == "V"), aes(x = yw, y = tavg), color = "black") +
+  geom_line(data = filter(scaled_data, DRegionDAT=="MA_BOS" & Mode == "V"), aes(x = yw, y = prcp), color = "blue") +
+  geom_line(data = filter(scaled_data, DRegionDAT=="MA_BOS" & Mode == "V"), aes(x = yw, y = sanitized_cost), color = "green") +
+  labs(title = "Boston Van", y= "normalized value")
+```
+
+## Save the cleaned up and joined data set to a csv file.
+```{r}
+write.csv(data_all, "data/data_shipping_and_weather_joined_cleaned.csv")
+```
+

@@ -1,0 +1,111 @@
+---
+title: "Incorporatingfutures"
+author: "team3"
+date: "7/28/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+```{r}
+library(plyr)
+library(dplyr)
+library(fpp3)
+library(tsibble)
+library(forecast)
+library(zoo)
+library(tidyverse)
+```
+```{r}
+mergedd<- read.csv("economic_data_with_diesel_futures.csv")
+
+mergedd
+```
+
+#Feel free to play around with combinations. I just added Diesel_futures
+```{r}
+#make into univariate approx_cost series
+df <- mergedd %>%
+  dplyr::select(Mode, ORegionDAT, DRegionDAT, yw, approx_cost, prcp, tmax, diesel_price, deaths, new_deaths, pandemic, unemployment, ppi, Diesel_futures)
+
+df 
+```
+```{r}
+#make raw data into multivariate approx_cost series for just Chicago R
+data_multi <- df %>%
+  filter(Mode =="R", DRegionDAT=="IL_CHI") %>%
+  filter(yw <= "2021 W26") %>%
+  mutate(yw = yearweek(yw)) %>%
+  as_tsibble(key = c(Mode,ORegionDAT, DRegionDAT), index = yw)
+```
+```{r}
+#create cross-validation training data - Grace and Liz' code uses 3 month forecasts
+#stretch into rolling forecasting origin
+data_mult_tri <- data_multi %>%
+  stretch_tsibble(.init = 208, .step = 6) %>%
+  relocate(yw, Mode, ORegionDAT, DRegionDAT, .id)
+tail(data_mult_tri, 200)
+```
+```{r}
+#make data for measuring accuracy of forecast
+data_multi_future <- df %>%
+  filter(Mode =="R", DRegionDAT=="IL_CHI") %>%
+  filter(yw >= "2021 W01" & yw <= "2021 W26") %>%
+  drop_na() %>%
+  mutate(yw = yearweek(yw)) %>%
+  as_tsibble(key = c(Mode,ORegionDAT, DRegionDAT), index = yw)
+
+#make forecast external data for sarima forecasting
+data_multi_forecast <- data_multi_future %>%
+  as_tibble() %>%
+  mutate(yw = as.character(yw)) %>%
+  filter(yw >= "2021 W01" & yw <= "2021 W26") %>%
+  dplyr::select(-approx_cost) %>%
+  mutate(yw = yearweek(yw)) %>%
+  as_tsibble(key = c(Mode,ORegionDAT, DRegionDAT), index = yw) %>%
+  slide_tsibble(.size = 12, .step = 6) %>%
+  relocate(yw, Mode, ORegionDAT, DRegionDAT, .id)
+tail(data_multi_forecast, 15)
+```
+```{r}
+#CROSS VALIDATION ACCURACY
+fc_sarima_pandemic_multivar_step6 = data_mult_tri %>%
+  model(ARIMA(approx_cost ~ tmax + prcp + diesel_price+pandemic+ new_deaths+ unemployment + ppi+ Diesel_futures)) %>%
+  forecast(data_multi_forecast)
+fc_sarima_pandemic_multivar_step6 %>%
+  accuracy(data_multi_future)
+
+# TRAINING SET ACCURACY
+data_multi %>%
+  model(ARIMA(approx_cost ~ tmax + prcp + diesel_price+pandemic+ new_deaths+ unemployment+ ppi+ Diesel_futures)) %>%
+  accuracy()
+```
+
+#Plot sarima multivar forecasts and save to a pdf
+```{r}
+fc_sarima_pandemic_multivar_step6
+```
+```{r, eval = FALSE}
+plot_list = list()
+
+# autoplot(fc_sarima_pandemic_multivar_step6 %>% filter(.id == 3)) + autolayer(data_multi_future, approx_cost, colour = "black") + ylim(0.5, 3.5)
+
+for (i in 1:3) {
+  p = autoplot(fc_sarima_pandemic_multivar_step6 %>% filter(.id == i)) + autolayer(data_multi_future, approx_cost, colour = "black")+ylim(0.5,3.5)
+  plot_list[[i]] = p
+}
+# Create pdf of plot.
+pdf("sarima_PANDEMIC_multivar_step6.pdf")
+for (i in 1:3) {
+    print(plot_list[[i]])
+}
+dev.off()
+```

@@ -1,0 +1,177 @@
+---
+title: "CovidDeaths"
+author: "team3"
+date: "7/20/2021"
+output: html_document
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+# Using COVID Deaths
+
+```{r}
+library(tidyverse)
+library(lubridate)
+library(tsibble)
+```
+```{r}
+data <- read_csv("data/covid_deaths_usafacts.csv")
+
+```
+```{r}
+mainset <- read_csv("data/Fresno/data_interpolated_with_diesel.csv") %>%
+  mutate(yw = yearweek(yw)) %>%
+  select(-X1) %>%
+  as_tsibble(key = c(Mode,ORegionDAT, DRegionDAT), index = yw)
+```
+```{r}
+data %>% summarize(across(`2020-01-22`:`2021-07-18`, ~ sum(.x)))
+```
+```{r}
+weekly_deaths <-
+  data %>%
+  summarize(across(`2020-01-22`:`2021-07-12`, ~ sum(.x))) %>%
+  pivot_longer(everything(), names_to = "date", values_to = "deaths") %>%
+  mutate(date = parse_date(date)) %>%
+  group_by(year = year(date), week = week(date)) %>%
+  summarize(deaths = sum(deaths)) %>%
+  ungroup() %>%
+  mutate(yw = yearweek(str_c(year, " w", week))) %>%
+  select(deaths, yw)
+
+weekly_deaths
+
+mainset
+
+new_mainset <- mainset %>%
+  left_join(weekly_deaths, by = "yw") %>%
+  mutate(deaths = replace_na(deaths, 0))
+
+new_mainset
+```
+
+```{r}
+write.csv(data_all, "data/data_interpolated_with_diesel.csv")
+
+```
+
+------------------------------------------------------------------------
+
+
+# Dummy Variable
+
+
+
+
+---
+title: "DummyCovid2"
+author: "team3"
+date: "7/20/2021"
+output: html_document
+---
+output:
+  pdf_document: default
+  html_document: default
+---
+#ARIMA/SARIMA
+```{r}
+library(plyr)
+library(dplyr)
+library(fpp3)
+library(tsibble)
+library(forecast)
+library(zoo)
+library(tidyverse)
+```
+```{r}
+#read in the interpolated data
+data <- readr::read_csv(file = 'data/Fresno/data_interpolated_with_diesel.csv') %>%
+  mutate(yw = yearweek(yw)) %>%
+  select(-X1) %>%
+  as_tsibble(key = c(Mode,ORegionDAT, DRegionDAT), index = yw) 
+```
+```{r}
+data
+```
+```{r}
+#make into univariate approx_cost series
+data <- data %>%
+  select(Mode, ORegionDAT, DRegionDAT, yw, approx_cost, prcp, tmax, diesel_price)
+```
+```{r}
+#trim leading and trailing na's
+data <- drop_na(data)
+```
+```{r}
+#Make new column and assign to data2
+data2 <- data %>% 
+  arrange(yw) %>%
+  mutate(yw1=c(1:nrow(data)))
+```
+```{r}
+#Make another column with pandemic dummy variable
+#Need to make it into a factor
+data2 <- data2 %>% mutate(pandemic=as.factor(ifelse(yw1<661, 0,1)))
+data2
+```
+```{r}
+#create training set - up through 2020 of the time series
+train <- data2 %>% 
+  filter_index(~ "2021 W14")
+head(train)
+```
+There are many possible arima models - based on choice of hyperparameters and whether to include seasonality or not. The ARIMA() function automatically chooses the best hyperparameters.
+```{r}
+fit <- train %>% model(ARIMA(approx_cost ~ prcp + tmax + diesel_price + pandemic))
+```
+```{r}
+#see what the automatically chosen arima models were.
+report(fit %>% filter (Mode=="R", DRegionDAT=="IL_CHI"))
+report(fit %>% filter (Mode=="V", DRegionDAT=="IL_CHI"))
+report(fit %>% filter (Mode=="R", DRegionDAT=="MA_BOS"))
+report(fit %>% filter (Mode=="V", DRegionDAT=="MA_BOS"))
+```
+```{r}
+#forecast
+#in order to produce the forecast of approx_cost, we need to feed in a forecast of tmax, prcp, and diesel_price. Instead of producing a forecast, I will just use the actual data here. 
+future_data <- data2 %>% 
+  filter_index("2021 W01"~"2021 W26") %>%
+  select(Mode, ORegionDAT, DRegionDAT, yw, tmax, prcp, diesel_price, pandemic)
+fc <- fit %>% forecast(future_data)
+```
+```{r fig.height = 6, fig.width = 10}
+#plot
+fc %>%
+  autoplot(train) +
+  autolayer(data, colour = "black") +
+  labs(title="SARIMA")
+```
+
+```{r}
+data2
+
+trimmed <- data2 %>% 
+  as_tibble() %>%
+  select(yw, pandemic) %>%
+  distinct()
+
+trimmed
+
+newest_mainset <- new_mainset %>%
+  left_join(trimmed, by = "yw")
+
+newest_mainset
+write.csv(newest_mainset, "data/data_interpolated_with_covid.csv")
+```
+
+
+
+
+
+
+
+
+
+

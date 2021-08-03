@@ -1,0 +1,147 @@
+---
+output:
+  html_document: default
+  pdf_document: default
+---
+
+# VAR (Vector Auto Regression)
+
+Univariate auto regression works as follows:
+
+$$y(t) = a + w_1 \cdot y(t - 1) + \cdots + w_p \cdot y(t - p) + e(t).$$
+
+VAR analysis extends AR analysis by investigating the interdependencies between multiple variables over time. The guiding formula appears as follows:
+
+$$\mathbf{y}(t) = \mathbf{a} + W_1 \mathbf{y}(t - 1) + \cdots + W_p \mathbf{y}(t - p) + \mathbf{\varepsilon}(t),$$
+where we assume there are $k$ many variables, each vector is $k \times 1$, and each matrix is $k \times k$. This is known as VAR for $p$ lags. Rewriting using lag operators, we have
+
+$$I \mathbf{y}(t) = \mathbf{a} + W_1 L^1 \mathbf{y}(t) + \cdots + W_p L^p \mathbf{y}(t) + \mathbf{\varepsilon}(t),$$
+from which we define $\Phi(L) := I - W_1 L^1 - \cdots - W_p L^p$ and rewrite:
+
+$$\mathbf{y}(t) = \Phi(L)^{-1} (\mathbf{a} + \mathbf{\varepsilon}(t))$$. 
+
+We say that the series is *stationary* if $|\Phi(L)^{-1}| < 1$. 
+
+
+
+```{r message = FALSE, warning = FALSE}
+
+# Load packages
+#library(tidyverse)
+library(tidyr)
+#library(plyr)
+library(tsibble)
+library(ggplot2)
+#library(feasts)
+#library(lubridate)
+#library(zoo)
+#library(fpp3)
+library(forecast)
+library(dplyr)
+library(fable)
+
+# Recommended to run VAR
+
+#library(mFilter)
+#library(tseries)
+#library(TSstudio)
+#library(forecast)
+#library(tidyverse)
+#library(vars)
+```
+
+# New Method, this one is working
+
+If the series are stationary, we forecast them by fitting a VAR to the data directly (known as a “VAR in levels”). If the series are non-stationary, we take differences of the data in order to make them stationary, then fit a VAR model (known as a “VAR in differences”). In both cases, the models are estimated equation by equation using the principle of least squares. For each equation, the parameters are estimated by minimising the sum of squared error values.
+
+Best to keep $k$ small, since the number of coefficients equals $k + pk^2$ in a VAR model. AIC tends to choose large numbers of lags; for VAR models, we usually use BIC instead. A sparse VAR is a more sophisticated model we could consider in the future. 
+
+A criticism that VARs face is that they are atheoretical; that is, they are not built on some economic theory that imposes a theoretical structure on the equations. Every variable is assumed to influence every other variable in the system, which makes a direct interpretation of the estimated coefficients difficult.
+
+```{r warning=FALSE}
+# Import the interpolated data with diesel
+data <- readr::read_csv(file = 'data/data_interpolated_with_diesel.csv') %>%
+  dplyr::select(-X1) 
+
+# Only take the necessary columns
+data <- data %>%
+  dplyr::select(Mode, ORegionDAT, DRegionDAT, tmax, prcp, diesel_price, yw, approx_cost)
+
+# Drop na's
+data <- drop_na(data)
+
+# Produce a training set that is a tsibble. I haven't made "data" a tsibble yet or else I get some weird errors
+train <- data %>%
+  dplyr::filter(DRegionDAT=="IL_CHI" & Mode == "R") %>%
+  dplyr::filter(yw <= "2018 W53") %>%
+  mutate(yw = yearweek(yw)) %>%
+  as_tsibble(key = c(Mode, ORegionDAT, DRegionDAT), index = yw)
+
+# Make the data portion a tsibble now
+data <- data %>%
+  mutate(yw = yearweek(yw)) %>%
+  as_tsibble(key = c(Mode, ORegionDAT, DRegionDAT), index = yw)
+
+```
+
+
+
+```{r}
+# Produce a VAR model using approx_cost, tmax, prcp, and diesel_price, using p optimal between 0 and 15
+fit <- train %>%
+  model(
+    aicc = fable::VAR(vars(approx_cost, tmax, prcp, diesel_price) ~ AR(p=0:25))
+  )
+
+fit$aicc
+glance(fit)
+```
+
+```{r fig.height=6, fig.width = 80}
+# Make a prediction for the next year
+fc_aicc <- fit %>%
+  dplyr::select(aicc) %>%
+  forecast(h=52)
+
+# Shows the distribution column for testing purposes
+fc_aicc$.distribution
+
+# Only take the columns in train that were used in the forecast... for some reason need to do that
+train_filtered <- train %>%
+  dplyr::select(yw, approx_cost, tmax, prcp, diesel_price)
+
+# Produce a plot of the predictions for each of the variables involved
+autoplot(fc_aicc, train_filtered) +
+  autolayer(data %>% dplyr::filter(Mode == "R" & DRegionDAT == "IL_CHI"), approx_cost)
+```
+----------------------------
+
+# This is broken for right now
+
+## Exogenous stuff
+Now obviously we would like some variables to not depend on the rest. For instance, we can make `tmax`, `tmin`, `tavg`, and `diesel_price` exogenous. 
+
+```{r}
+library(MTS)
+
+x_endog = train$approx_cost
+x_exog = cbind(train$tmax, train$tmin, train$prcp, train$diesel_price)
+
+fitX = VARX(zt = x_endog, p=2, xt = x_exog)
+
+summary(fitX)
+
+acf(residuals(fitX))
+```
+
+# Now trying to do predictions
+
+```{r}
+#VARXpred(fitX, newxt = NULL, hstep = 1, orig = 0)
+```
+
+
+
+
+
+

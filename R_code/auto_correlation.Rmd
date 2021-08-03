@@ -1,0 +1,47 @@
+---
+output:
+  html_document: default
+  pdf_document: default
+---
+# ACF, PACF
+
+```{r message = FALSE, warning = FALSE}
+# Load packages
+library(tidyverse)
+library(tidyr)
+library(plyr)
+library(dplyr)
+library(tsibble)
+library(ggplot2)
+library(feasts)
+library(lubridate)
+library(zoo)
+```
+
+
+```{r}
+#read in the interpolated data
+data <- readr::read_csv(file = 'data/data_interpolated.csv') %>%
+  mutate(yw = yearweek(yw)) %>%
+  select(-X1) %>%
+  as_tsibble(key = c(Mode, ORegionDAT, DRegionDAT), index = yw) 
+```
+
+
+Plot correlograms
+```{r}
+data %>%
+  ACF(approx_cost, lag_max = Inf) %>%
+  autoplot() + 
+  facet_grid(rows = vars(Mode), cols = vars(DRegionDAT)) +
+  labs(title="Correlograms")
+```
+
+Plot partial correlograms (?)
+```{r}
+data %>%
+  PACF(approx_cost, lag_max = Inf) %>%
+  autoplot() + 
+  facet_grid(rows = vars(Mode), cols = vars(DRegionDAT)) +
+  labs(title="Partial Correlograms")
+```

@@ -1,6 +1,6 @@
 # Impact of Weather and Agricultural Events on Truckload Cost Per Mile
 
-*A project in partnership with CH Robinson*
+*A project in partnership with CH Robinson during the [2021 IMA Math-to-Industry Bootcamp VI](https://cse.umn.edu/ima/events/math-industry-boot-camp-vi)*.
 
 **Mentor**: Kaisa Taipale, CH Robinson
 

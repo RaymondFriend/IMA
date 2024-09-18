@@ -1,6 +1,9 @@
 # Impact of Weather and Agricultural Events on Truckload Cost Per Mile
+
 *A project in partnership with CH Robinson*
+
 **Mentor**: Kaisa Taipale, CH Robinson
+
 **Group Members**
 - Ghodsieh Ghanbari, Mississippi State University
 - Tony Haines, Old Dominion University
